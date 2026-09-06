@@ -42,9 +42,15 @@ public interface ITradeLogRepository
 
     Task<IReadOnlyList<TradeLogEntry>> GetByInstrumentAsync(Guid instrumentId, int limit, CancellationToken ct);
 
+    /// <summary>All closed trades for the instrument, ordered by exit time ascending (chart markers).</summary>
+    Task<IReadOnlyList<TradeLogEntry>> GetAllByInstrumentAsync(Guid instrumentId, CancellationToken ct);
+
     /// <summary>Sum of net PnL of all closed trades for the instrument (used to restore engine cash).</summary>
     Task<decimal> SumRealizedPnlAsync(Guid instrumentId, CancellationToken ct);
 }
+
+/// <summary>One page of signal-log entries, newest first.</summary>
+public sealed record SignalLogPage(int Total, int Page, int PageSize, IReadOnlyList<SignalLogEntry> Items);
 
 /// <summary>Persistence for signals published to Telegram (audit log).</summary>
 public interface ISignalLogRepository
@@ -52,4 +58,10 @@ public interface ISignalLogRepository
     Task AddAsync(SignalLogEntry entry, CancellationToken ct);
 
     Task<IReadOnlyList<SignalLogEntry>> GetByInstrumentAsync(Guid instrumentId, int limit, CancellationToken ct);
+
+    /// <summary>Page of signals filtered by ticker (exact match, case-insensitive), newest first.</summary>
+    Task<SignalLogPage> GetPageAsync(string? ticker, int page, int pageSize, CancellationToken ct);
+
+    /// <summary>Distinct tickers present in the signal log, ascending.</summary>
+    Task<IReadOnlyList<string>> GetTickersAsync(CancellationToken ct);
 }

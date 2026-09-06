@@ -154,6 +154,15 @@ public sealed class EfTradeLogRepository : ITradeLogRepository
             .ToListAsync(ct).ConfigureAwait(false);
     }
 
+    public async Task<IReadOnlyList<TradeLogEntry>> GetAllByInstrumentAsync(Guid instrumentId, CancellationToken ct)
+    {
+        await using var db = await _factory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        return await db.TradeLogs.AsNoTracking()
+            .Where(x => x.InstrumentId == instrumentId)
+            .OrderBy(x => x.ExitTime)
+            .ToListAsync(ct).ConfigureAwait(false);
+    }
+
     public async Task<decimal> SumRealizedPnlAsync(Guid instrumentId, CancellationToken ct)
     {
         await using var db = await _factory.CreateDbContextAsync(ct).ConfigureAwait(false);
@@ -186,6 +195,35 @@ public sealed class EfSignalLogRepository : ISignalLogRepository
             .Where(x => x.InstrumentId == instrumentId)
             .OrderByDescending(x => x.Timestamp)
             .Take(limit)
+            .ToListAsync(ct).ConfigureAwait(false);
+    }
+
+    public async Task<SignalLogPage> GetPageAsync(string? ticker, int page, int pageSize, CancellationToken ct)
+    {
+        await using var db = await _factory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        IQueryable<SignalLogEntry> query = db.SignalLogs.AsNoTracking();
+        if (!string.IsNullOrWhiteSpace(ticker))
+        {
+            string normalized = ticker.Trim().ToUpperInvariant();
+            query = query.Where(x => x.Ticker == normalized);
+        }
+
+        int total = await query.CountAsync(ct).ConfigureAwait(false);
+        var items = await query
+            .OrderByDescending(x => x.Timestamp)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .ToListAsync(ct).ConfigureAwait(false);
+        return new SignalLogPage(total, page, pageSize, items);
+    }
+
+    public async Task<IReadOnlyList<string>> GetTickersAsync(CancellationToken ct)
+    {
+        await using var db = await _factory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        return await db.SignalLogs.AsNoTracking()
+            .Select(x => x.Ticker)
+            .Distinct()
+            .OrderBy(t => t)
             .ToListAsync(ct).ConfigureAwait(false);
     }
 }

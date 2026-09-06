@@ -33,6 +33,8 @@ public sealed class InstrumentEngine : IAsyncDisposable
 
     private readonly MomentumEngineState _state;
     private readonly object _gate = new();
+    private readonly object _barsLock = new();
+    private readonly List<Candle> _dailyBars = new();
     private CancellationTokenSource? _cts;
     private Task? _runTask;
 
@@ -86,6 +88,18 @@ public sealed class InstrumentEngine : IAsyncDisposable
         var snapshot = _state.GetSnapshot(lastPrice ?? _state.Position?.EntryPrice ?? 0m);
         return _state.Position is null ? snapshot : snapshot;
     }
+
+    /// <summary>Completed daily bars held in memory (warm-up history, finalized sessions), ascending.</summary>
+    public IReadOnlyList<Candle> GetDailyBars()
+    {
+        lock (_barsLock)
+        {
+            return _dailyBars.ToArray();
+        }
+    }
+
+    /// <summary>The live session bar currently being accumulated (not yet finalized).</summary>
+    public Candle? CurrentSessionBar => _sessionBar;
 
     public void Start()
     {
@@ -244,6 +258,12 @@ public sealed class InstrumentEngine : IAsyncDisposable
         }
 
         _state.WarmUp(bars);
+        lock (_barsLock)
+        {
+            _dailyBars.Clear();
+            _dailyBars.AddRange(bars);
+        }
+
         _metrics.Update(InstrumentId, m =>
         {
             m.WarmupDone = true;
@@ -262,6 +282,18 @@ public sealed class InstrumentEngine : IAsyncDisposable
                 "Restored {Ticker} position: {Direction} {Units} @ {Entry} (open {Open:O})",
                 Ticker, open.Direction, open.Units, open.EntryPrice, open.EntryTime);
         }
+
+        _metrics.Update(InstrumentId, m =>
+        {
+            var snapshot = _state.GetSnapshot(_state.Position?.EntryPrice ?? 0m);
+            m.PositionState = snapshot.PositionDirection switch
+            {
+                SignalDirection.Long => "long",
+                SignalDirection.Short => "short",
+                _ => "flat",
+            };
+            m.PositionSince = snapshot.EntryTime;
+        });
 
         string lastBar = bars.Count > 0
             ? bars[^1].Time.ToString("yyyy-MM-dd") + " close=" + bars[^1].Close
@@ -282,6 +314,10 @@ public sealed class InstrumentEngine : IAsyncDisposable
             if (_sessionBar is not null)
             {
                 _state.FinalizeDay(_sessionBar.Value);
+                lock (_barsLock)
+                {
+                    _dailyBars.Add(_sessionBar.Value);
+                }
             }
 
             _sessionDate = mskDate;

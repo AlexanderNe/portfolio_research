@@ -52,6 +52,14 @@ public sealed class EngineSupervisor : BackgroundService, IEngineSupervisor
         }
     }
 
+    public InstrumentEngine? GetEngine(Guid instrumentId)
+    {
+        lock (_gate)
+        {
+            return _engines.TryGetValue(instrumentId, out var engine) ? engine : null;
+        }
+    }
+
     public bool IsGloballyRunning => _globallyRunning;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)

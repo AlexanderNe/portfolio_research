@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Price chart</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: "Segoe UI", system-ui, Arial, sans-serif;
+    background: #131820; color: #dbe2ec; font-size: 14px;
+  }
+  header {
+    background: #1c2431; border-bottom: 1px solid #2c3648;
+    padding: 10px 20px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  }
+  header h1 { margin: 0; font-size: 16px; font-weight: 600; }
+  .btn {
+    background: #2b3748; cursor: pointer; border: 1px solid #3d4a5f; border-radius: 6px;
+    color: #dbe2ec; padding: 5px 12px; font-size: 12px;
+  }
+  .btn:hover { background: #34445c; }
+  #legend { font-size: 12px; color: #8fa3bf; margin-left: auto; }
+  main { padding: 16px 20px; }
+  .chartwrap { position: relative; background: #161d29; border: 1px solid #2c3648; border-radius: 8px; }
+  canvas { display: block; width: 100%; height: 560px; }
+  .tooltip {
+    position: absolute; pointer-events: none; background: #232f42; border: 1px solid #3d4a5f;
+    border-radius: 6px; padding: 6px 10px; font-size: 12px; line-height: 1.5;
+    display: none; white-space: nowrap; z-index: 5; color: #dbe2ec;
+  }
+  .tooltip b { color: #7fb3e8; }
+  .tooltip .mk-entry { color: #7fd18a; }
+  .tooltip .mk-exit { color: #e8b36f; }
+  .errorbox { display: none; background: #4a1d1d; border: 1px solid #7a3030; color: #ffd2d2; border-radius: 6px; padding: 10px 14px; margin-bottom: 14px; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">Price chart</h1>
+  <button class="btn" id="btnReset" title="Reset zoom and price scale">Reset view</button>
+  <div id="legend"></div>
+</header>
+<main>
+  <div class="chartwrap">
+    <canvas id="cv"></canvas>
+    <div class="tooltip" id="tip"></div>
+  </div>
+</main>
+<script>
+"use strict";
+const cv = document.getElementById("cv");
+const ctx = cv.getContext("2d");
+const tip = document.getElementById("tip");
+let data = null;
+let scale = null;
+let W = 0, H = 560;
+const PAD = { l: 64, r: 16, t: 16, b: 24 };
+let view = { from: 0, to: 1 };
+let priceView = null;
+let _autoMin = 0, _autoMax = 1;
+let panning = null;
+
+function fmtPrice(v) {
+  if (v === null || v === undefined || isNaN(v)) return "—";
+  return Number(v).toLocaleString("ru-RU", { minimumFractionDigits: 0, maximumFractionDigits: 4 });
+}
+function fmtPct(v) {
+  if (v === null || v === undefined || isNaN(v)) return "—";
+  return (v > 0 ? "+" : "") + Number(v).toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + "%";
+}
+function fmtDay(iso) {
+  const d = new Date(iso);
+  return isNaN(d) ? "—" : d.toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit", year: "2-digit" });
+}
+function fmtTime(iso) {
+  const d = new Date(iso);
+  return isNaN(d) ? "—" : d.toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
+function esc(s) {
+  return String(s === null || s === undefined ? "" : s).replace(/[&<>"']/g, c => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+async function load() {
+  const id = new URLSearchParams(location.search).get("id");
+  if (!id) { fail("Missing id parameter. Open the chart from the admin panel."); return; }
+  try {
+    const res = await fetch("/api/instruments/" + id + "/chart-data", { credentials: "same-origin" });
+    if (res.status === 401) { fail("Authentication required."); return; }
+    if (!res.ok) { fail("HTTP " + res.status + ": " + (await res.text())); return; }
+    data = await res.json();
+    document.getElementById("title").textContent =
+      (data.name ? data.name + " " : "") + data.ticker + " — daily price chart";
+    render();
+  } catch (err) {
+    fail("Failed to load chart: " + err.message);
+  }
+}
+
+function fail(msg) {
+  document.getElementById("title").textContent = "Chart unavailable";
+  const box = document.createElement("div");
+  box.className = "errorbox";
+  box.style.display = "block";
+  box.textContent = msg;
+  document.querySelector("main").appendChild(box);
+}
+
+function resize() {
+  const rect = cv.parentElement.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  W = Math.max(300, Math.floor(rect.width));
+  cv.style.width = W + "px";
+  cv.style.height = H + "px";
+  cv.width = Math.floor(W * dpr);
+  cv.height = Math.floor(H * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+function computeScale() {
+  const cs = data.candles || [];
+  _autoMin = Infinity; _autoMax = -Infinity;
+  cs.forEach(c => {
+    if (c.low < _autoMin) _autoMin = c.low;
+    if (c.high > _autoMax) _autoMax = c.high;
+  });
+  if (data.openPosition) {
+    [data.openPosition.stopLoss, data.openPosition.takeProfit, data.openPosition.entryPrice].forEach(p => {
+      _autoMin = Math.min(_autoMin, p);
+      _autoMax = Math.max(_autoMax, p);
+    });
+  }
+  if (!isFinite(_autoMin)) { _autoMin = 0; _autoMax = 1; }
+  const padPct = 0.06 * (_autoMax - _autoMin) || 1;
+  _autoMin -= padPct; _autoMax += padPct;
+
+  const plotW = W - PAD.l - PAD.r, plotH = H - PAD.t - PAD.b;
+  const n = cs.length;
+  const windowFrac = Math.max(1e-6, view.to - view.from);
+  const priceMin = priceView ? priceView.min : _autoMin;
+  const priceMax = priceView ? priceView.max : _autoMax;
+  const priceSpan = Math.max(1e-9, priceMax - priceMin);
+  scale = {
+    cs, n, plotW, plotH, windowFrac,
+    candleW: Math.max(1, Math.min(20, n > 0 ? plotW / windowFrac / n * 0.7 : 20)),
+    xFor: i => n === 0 ? PAD.l : PAD.l + ((i / n - view.from) / windowFrac) * plotW,
+    yFor: p => PAD.t + plotH - (p - priceMin) / priceSpan * plotH,
+    minPrice: priceMin,
+    maxPrice: priceMax,
+  };
+}
+
+function candleIndexFor(time) {
+  if (scale.n === 0) return 0;
+  const t = new Date(time).getTime();
+  if (new Date(scale.cs[0].time).getTime() >= t) return 0;
+  if (new Date(scale.cs[scale.n - 1].time).getTime() <= t) return scale.n - 1;
+  let lo = 0, hi = scale.n - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (new Date(scale.cs[mid].time).getTime() <= t) lo = mid; else hi = mid - 1;
+  }
+  return lo;
+}
+
+function drawGrid() {
+  ctx.strokeStyle = "#232c3b"; ctx.lineWidth = 1;
+  ctx.fillStyle = "#8fa3bf"; ctx.font = "11px Consolas, monospace";
+  ctx.textAlign = "right"; ctx.textBaseline = "middle";
+  for (let i = 0; i <= 6; i++) {
+    const p = scale.minPrice + (scale.maxPrice - scale.minPrice) * i / 6;
+    const y = scale.yFor(p);
+    ctx.beginPath(); ctx.moveTo(PAD.l, y); ctx.lineTo(W - PAD.r, y); ctx.stroke();
+    ctx.fillText(fmtPrice(p), PAD.l - 6, y);
+  }
+  if (scale.n === 0) return;
+  const labelCount = Math.min(scale.n, 8);
+  ctx.textAlign = "center"; ctx.textBaseline = "top";
+  let prevX = -100;
+  for (let i = 0; i < labelCount; i++) {
+    const f = view.from + (i / Math.max(1, labelCount - 1)) * (view.to - view.from);
+    const idx = Math.min(scale.n - 1, Math.round(f * scale.n));
+    const x = scale.xFor(idx);
+    if (x - prevX < 46) continue;
+    prevX = x;
+    ctx.fillText(fmtDay(scale.cs[idx].time), x, H - PAD.b + 6);
+  }
+}
+
+function zoomHorizontal(mx, factor) {
+  if (scale.n === 0) return;
+  const fx = Math.min(1, Math.max(0, (mx - PAD.l) / scale.plotW));
+  const curFrom = view.from, curTo = view.to;
+  const curWidth = curTo - curFrom;
+  const newWidth = Math.min(1, Math.max(Math.min(1, 2 / scale.n), curWidth * factor));
+  const anchor = curFrom + fx * curWidth;
+  let newFrom = anchor - fx * newWidth;
+  let newTo = newFrom + newWidth;
+  if (newFrom < 0) { newFrom = 0; newTo = newWidth; }
+  if (newTo > 1) { newTo = 1; newFrom = 1 - newWidth; }
+  view.from = newFrom;
+  view.to = newTo;
+  render();
+}
+
+function zoomVertical(my, factor) {
+  if (scale.n === 0) return;
+  const fy = Math.min(1, Math.max(0, (my - PAD.t) / scale.plotH));
+  const curMin = scale.minPrice, curMax = scale.maxPrice;
+  const curSpan = curMax - curMin;
+  const minSpan = Math.max(1e-9, (_autoMax - _autoMin) * 0.002);
+  const newSpan = Math.max(minSpan, curSpan * factor);
+  const anchor = curMax - fy * curSpan;
+  const newMax = anchor + fy * newSpan;
+  priceView = { min: newMax - newSpan, max: newMax };
+  render();
+}
+
+function panBy(dx, dy) {
+  if (dx !== 0) {
+    const windowFrac = Math.max(1e-6, view.to - view.from);
+    const shift = (dx / scale.plotW) * windowFrac;
+    let from = view.from - shift;
+    let to = view.to - shift;
+    if (from < 0) { to -= from; from = 0; }
+    if (to > 1) { from -= (to - 1); to = 1; }
+    view.from = from;
+    view.to = to;
+  }
+  if (dy !== 0) {
+    const span = scale.maxPrice - scale.minPrice;
+    const shift = (dy / scale.plotH) * span;
+    priceView = { min: scale.minPrice + shift, max: scale.maxPrice + shift };
+  }
+  render();
+}
+
+function drawCandles() {
+  const up = "#2e9e5b", dn = "#d64545";
+  scale.cs.forEach((c, i) => {
+    const x = scale.xFor(i);
+    const o = scale.yFor(c.open), h = scale.yFor(c.high), l = scale.yFor(c.low), cl = scale.yFor(c.close);
+    const color = c.close >= c.open ? up : dn;
+    ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(x, h); ctx.lineTo(x, l); ctx.stroke();
+    const top = Math.min(o, cl), bot = Math.max(o, cl);
+    const bw = Math.max(1, scale.candleW);
+    ctx.fillRect(x - bw / 2, top, bw, Math.max(1, bot - top));
+  });
+}
+
+function drawTradeLines() {
+  (data.trades || []).forEach(t => {
+    const x1 = scale.xFor(candleIndexFor(t.entryTime));
+    const x2 = scale.xFor(candleIndexFor(t.exitTime));
+    const y1 = scale.yFor(t.entryPrice);
+    const y2 = scale.yFor(t.exitPrice);
+    ctx.strokeStyle = t.direction === "Long" ? "rgba(46,158,91,.45)" : "rgba(214,69,69,.45)";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+  });
+}
+
+function drawMarkers() {
+  (data.trades || []).forEach(t => {
+    drawEntry(t.direction, t.entryTime, t.entryPrice);
+    drawExit(t.exitTime, t.exitPrice, t.pnlPercent);
+  });
+  if (data.openPosition) {
+    drawEntry(data.openPosition.direction, data.openPosition.entryTime, data.openPosition.entryPrice);
+  }
+}
+
+function drawEntry(direction, time, price) {
+  const x = scale.xFor(candleIndexFor(time));
+  const y = scale.yFor(price);
+  const isLong = direction === "Long";
+  ctx.fillStyle = isLong ? "#2e9e5b" : "#d64545";
+  ctx.strokeStyle = "#fff"; ctx.lineWidth = 1;
+  const s = 11;
+  ctx.beginPath();
+  if (isLong) { ctx.moveTo(x - s / 2, y + s * 0.4); ctx.lineTo(x + s / 2, y + s * 0.4); ctx.lineTo(x, y - s * 0.5); }
+  else { ctx.moveTo(x - s / 2, y - s * 0.4); ctx.lineTo(x + s / 2, y - s * 0.4); ctx.lineTo(x, y + s * 0.5); }
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+}
+
+function drawExit(time, price, pnl) {
+  const x = scale.xFor(candleIndexFor(time));
+  const y = scale.yFor(price);
+  const color = (pnl === null || pnl === undefined || pnl === 0) ? "#9aa7b8"
+              : pnl > 0 ? "#2e9e5b" : "#d64545";
+  ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.fillStyle = "#161d29";
+  ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(x - 3, y - 3); ctx.lineTo(x + 3, y + 3);
+  ctx.moveTo(x + 3, y - 3); ctx.lineTo(x - 3, y + 3);
+  ctx.stroke();
+}
+
+function drawLevels() {
+  if (!data.openPosition) return;
+  const op = data.openPosition;
+  const draw = (price, label, color) => {
+    const y = scale.yFor(price);
+    ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.setLineDash([6, 4]);
+    ctx.beginPath(); ctx.moveTo(PAD.l, y); ctx.lineTo(W - PAD.r, y); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = color; ctx.font = "12px Segoe UI, sans-serif";
+    ctx.textAlign = "right"; ctx.textBaseline = "middle";
+    ctx.fillText(label + " " + fmtPrice(price), W - PAD.r - 6, y);
+  };
+  draw(op.takeProfit, "TP", "#2e9e5b");
+  draw(op.entryPrice, "ENTRY", "#e8b36f");
+  draw(op.stopLoss, "SL", "#d64545");
+}
+
+function buildLegend() {
+  const parts = ["candles: " + (scale ? scale.n : 0)];
+  parts.push("trades: " + (data.trades || []).length);
+  if (data.openPosition) {
+    const op = data.openPosition;
+    const dir = op.direction === "Long" ? "LONG" : "SHORT";
+    parts.push(dir + " " + op.units + " @ " + fmtPrice(op.entryPrice) +
+      "  SL " + fmtPrice(op.stopLoss) + "  TP " + fmtPrice(op.takeProfit));
+  } else {
+    parts.push("position: flat");
+  }
+  document.getElementById("legend").textContent = parts.join("   ·   ");
+}
+
+function render() {
+  resize();
+  ctx.clearRect(0, 0, W, H);
+  computeScale();
+  drawGrid();
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(PAD.l, PAD.t, scale.plotW, scale.plotH);
+  ctx.clip();
+  drawCandles();
+  drawTradeLines();
+  drawMarkers();
+  drawLevels();
+  ctx.restore();
+  buildLegend();
+}
+
+cv.addEventListener("mousemove", e => {
+  if (!scale || scale.n === 0 || panning) { tip.style.display = "none"; return; }
+  const rect = cv.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+  const fx = (mx - PAD.l) / Math.max(1, scale.plotW);
+  const idx = Math.round((view.from + fx * (view.to - view.from)) * scale.n);
+  if (idx < 0 || idx >= scale.n) { tip.style.display = "none"; return; }
+  const c = scale.cs[idx];
+  const lines = ["<b>" + fmtDay(c.time) + "</b>",
+    "O " + fmtPrice(c.open) + "   H " + fmtPrice(c.high),
+    "L " + fmtPrice(c.low) + "   C " + fmtPrice(c.close)];
+  (data.trades || []).forEach(t => {
+    if (candleIndexFor(t.entryTime) === idx) {
+      lines.push("<span class=\"mk-entry\">▲ " + (t.direction === "Long" ? "LONG" : "SHORT") + " entry @ " + fmtPrice(t.entryPrice) + " " + fmtTime(t.entryTime) + "</span>");
+    }
+    if (candleIndexFor(t.exitTime) === idx) {
+      lines.push("<span class=\"mk-exit\">✕ " + t.direction + " exit @ " + fmtPrice(t.exitPrice) + " (" + esc(t.reason || "") + ", " + fmtPct(t.pnlPercent) + ")</span>");
+    }
+  });
+  if (data.openPosition && candleIndexFor(data.openPosition.entryTime) === idx) {
+    lines.push("<span class=\"mk-entry\">◉ " + (data.openPosition.direction === "Long" ? "LONG" : "SHORT") + " open @ " + fmtPrice(data.openPosition.entryPrice) + " " + fmtTime(data.openPosition.entryTime) + "</span>");
+  }
+  tip.innerHTML = lines.join("<br>");
+  tip.style.display = "block";
+  tip.style.left = (mx + 14) + "px";
+  tip.style.top = (my + 14) + "px";
+});
+
+cv.addEventListener("mouseleave", () => { tip.style.display = "none"; });
+
+cv.addEventListener("wheel", e => {
+  e.preventDefault();
+  const rect = cv.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+  const factor = e.deltaY > 0 ? 1.15 : 1 / 1.15;
+  tip.style.display = "none";
+  if (e.shiftKey) zoomVertical(my, factor); else zoomHorizontal(mx, factor);
+}, { passive: false });
+
+document.getElementById("btnReset").onclick = () => {
+  view = { from: 0, to: 1 };
+  priceView = null;
+  if (data) render();
+};
+
+cv.addEventListener("mousedown", e => {
+  if (e.button !== 1) return;
+  e.preventDefault();
+  panning = { lastX: e.clientX, lastY: e.clientY };
+  cv.style.cursor = "grabbing";
+  tip.style.display = "none";
+});
+
+window.addEventListener("mousemove", e => {
+  if (!panning || !scale) return;
+  e.preventDefault();
+  const dx = e.clientX - panning.lastX;
+  const dy = e.clientY - panning.lastY;
+  panning.lastX = e.clientX;
+  panning.lastY = e.clientY;
+  panBy(dx, dy);
+});
+
+window.addEventListener("mouseup", e => {
+  if (e.button === 1 && panning) {
+    panning = null;
+    cv.style.cursor = "";
+  }
+});
+window.addEventListener("resize", () => { if (data) render(); });
+
+load();
+</script>
+</body>
+</html>

@@ -15,6 +15,8 @@ public static class AdminEndpoints
 
         app.MapGet("/admin", AdminPage.Serve);
 
+        app.MapGet("/chart", ChartPage.Serve);
+
         app.MapGet("/", async (IInstrumentRepository instruments, IEngineSupervisor supervisor, IMetricsStore metrics, CancellationToken ct) =>
         {
 var all = await instruments.GetAllAsync(ct).ConfigureAwait(false);
@@ -49,6 +51,73 @@ var all = await instruments.GetAllAsync(ct).ConfigureAwait(false);
                 : Results.Json(new InstrumentView(instrument, metrics.Get(id)));
         });
 
+        app.MapGet($"{rootPrefix}/instruments/{{id:guid}}/chart-data", async (
+            Guid id,
+            IInstrumentRepository instruments,
+            IEngineSupervisor supervisor,
+            IHistoricDailyBarsProvider history,
+            ITradeLogRepository tradeLogs,
+            IPositionRepository positions,
+            CancellationToken ct) =>
+        {
+            var instrument = await instruments.GetByIdAsync(id, ct).ConfigureAwait(false);
+            if (instrument is null)
+            {
+                return Results.NotFound();
+            }
+
+            IReadOnlyList<Candle> candles;
+            var engine = supervisor.GetEngine(id);
+            if (engine is not null)
+            {
+                var bars = engine.GetDailyBars().ToList();
+                if (engine.CurrentSessionBar is { } live && (bars.Count == 0 || bars[^1].Time < live.Time))
+                {
+                    bars.Add(live);
+                }
+
+                candles = bars;
+            }
+            else if (!string.IsNullOrWhiteSpace(instrument.Uid ?? instrument.Figi))
+            {
+                candles = await history.GetDailyBarsAsync(instrument.Uid ?? instrument.Figi!, 700, ct).ConfigureAwait(false);
+            }
+            else
+            {
+                candles = Array.Empty<Candle>();
+            }
+
+            var closedTrades = await tradeLogs.GetAllByInstrumentAsync(id, ct).ConfigureAwait(false);
+            var trades = closedTrades.Select(t => new ChartTradeDto(
+                t.Direction == SignalDirection.Long ? "Long" : "Short",
+                t.EntryTime,
+                t.EntryPrice,
+                t.ExitTime,
+                t.ExitPrice,
+                t.ExitReason.ToString(),
+                t.ReturnPercent)).ToList();
+
+            ChartOpenPositionDto? open = null;
+            var openPosition = await positions.GetOpenAsync(id, ct).ConfigureAwait(false);
+            if (openPosition is not null)
+            {
+                open = new ChartOpenPositionDto(
+                    openPosition.Direction == SignalDirection.Long ? "Long" : "Short",
+                    openPosition.EntryPrice,
+                    openPosition.StopLoss,
+                    openPosition.TakeProfit,
+                    openPosition.Units,
+                    openPosition.EntryTime);
+            }
+
+            return Results.Json(new ChartDataDto(
+                instrument.Ticker,
+                instrument.Name ?? string.Empty,
+                candles.Select(c => new ChartCandleDto(c.Time, c.Open, c.High, c.Low, c.Close, c.Volume)).ToList(),
+                trades,
+                open));
+        });
+
         app.MapGet($"{rootPrefix}/instruments/{{id:guid}}/signals", async (Guid id, ISignalLogRepository signals, int limit, CancellationToken ct) =>
         {
             if (limit <= 0 || limit > 500)
@@ -58,6 +127,16 @@ var all = await instruments.GetAllAsync(ct).ConfigureAwait(false);
 
             return Results.Json(await signals.GetByInstrumentAsync(id, limit, ct).ConfigureAwait(false));
         });
+
+        app.MapGet($"{rootPrefix}/signals", async (ISignalLogRepository signals, string? ticker, int page, int pageSize, CancellationToken ct) =>
+        {
+            page = page <= 0 ? 1 : page;
+            pageSize = pageSize <= 0 || pageSize > 200 ? 50 : pageSize;
+            return Results.Json(await signals.GetPageAsync(ticker, page, pageSize, ct).ConfigureAwait(false));
+        });
+
+        app.MapGet($"{rootPrefix}/signals/tickers", async (ISignalLogRepository signals, CancellationToken ct) =>
+            Results.Json(await signals.GetTickersAsync(ct).ConfigureAwait(false)));
 
         app.MapPost($"{rootPrefix}/instruments", async (InstrumentUpsertDto dto, IInstrumentRepository instruments, IEngineSupervisor supervisor, CancellationToken ct) =>
         {

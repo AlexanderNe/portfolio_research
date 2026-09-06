@@ -9,6 +9,9 @@ public interface IEngineSupervisor
 {
     IReadOnlyList<InstrumentEngine> Engines { get; }
 
+    /// <summary>Live engine for the instrument, or null when it is not running.</summary>
+    InstrumentEngine? GetEngine(Guid instrumentId);
+
     bool IsGloballyRunning { get; }
 
     /// <summary>Immediately re-sync engines with the current instrument table state.</summary>

@@ -12,6 +12,7 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Admin\admin.html" />
+    <EmbeddedResource Include="Admin\chart.html" />
   </ItemGroup>
 
   <PropertyGroup>
