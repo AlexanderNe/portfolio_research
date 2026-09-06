@@ -21,7 +21,7 @@ public static class ServiceCollectionExtensions
         services.AddDbContextFactory<AppDbContext>(options => options.UseNpgsql(connectionString));
 
         services.AddSingleton<TinkoffConnection>();
-        services.AddSingleton<IMarketDataGateway, TinkoffMarketDataGateway>();
+        services.AddSingleton<IMarketDataGateway, TinkoffMarketDataMultiplexer>();
         services.AddSingleton<IHistoricDailyBarsProvider, TinkoffHistoricDailyBarsProvider>();
         services.AddSingleton<ITelegramGateway, TelegramGateway>();
         services.AddSingleton<ITickerResolver, TinkoffTickerResolver>();

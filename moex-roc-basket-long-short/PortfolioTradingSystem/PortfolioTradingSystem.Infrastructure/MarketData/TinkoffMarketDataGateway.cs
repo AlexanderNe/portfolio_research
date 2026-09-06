@@ -1,27 +1,208 @@
 using System.Runtime.CompilerServices;
+using System.Threading.Channels;
 using Grpc.Core;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using PortfolioTradingSystem.Application.Configuration;
 using PortfolioTradingSystem.Application.Ports;
-using Candle = PortfolioTradingSystem.Domain.Models.Candle;
+using PortfolioTradingSystem.Domain.Models;
 using PortfolioTradingSystem.Infrastructure.Tinkoff;
 using Tinkoff.InvestApi.V1;
+using Candle = PortfolioTradingSystem.Domain.Models.Candle;
 
 namespace PortfolioTradingSystem.Infrastructure.MarketData;
 
 /// <summary>
-/// Real-time 1-minute candle feed. Opens one server-side gRPC stream per call
-/// (one live caller/engine at a time per instrument). Reconnection is handled by
-/// the caller (InstrumentEngine) with exponential backoff.
+/// Real-time 1-minute candle feed multiplexed over ONE server-side market-data stream.
+/// T-Bank limits the number of simultaneously open quotes streams (32) but allows up
+/// to 300 subscriptions per stream, so a stream-per-engine design (one per instrument)
+/// trips error 80001 "Limit of open streams exceeded" as soon as several engines run.
+/// Here every instrument subscribes on the same connection; the stream is reopened with
+/// the full subscription set when the set changes. Reconnects are transparent to callers:
+/// per-instrument channels stay open across stream restarts.
 /// </summary>
-public sealed class TinkoffMarketDataGateway : IMarketDataGateway
+public sealed class TinkoffMarketDataMultiplexer : IMarketDataGateway, IAsyncDisposable
 {
     private readonly TinkoffConnection _connection;
+    private readonly ILogger<TinkoffMarketDataMultiplexer> _logger;
+    private readonly TimeSpan _reconnectStart;
+    private readonly TimeSpan _reconnectMax;
+    private readonly object _gate = new();
+    private readonly Dictionary<string, Channel<Candle>> _subscriptions = new();
+    private CancellationTokenSource? _workerCts;
+    private Task? _worker;
+    private bool _restartRequested;
 
-    public TinkoffMarketDataGateway(TinkoffConnection connection)
+    public TinkoffMarketDataMultiplexer(
+        TinkoffConnection connection,
+        IOptions<EngineOptions> engineOptions,
+        ILogger<TinkoffMarketDataMultiplexer> logger)
     {
         _connection = connection;
+        _logger = logger;
+        _reconnectStart = TimeSpan.FromSeconds(engineOptions.Value.ReconnectDelaySeconds);
+        _reconnectMax = TimeSpan.FromSeconds(engineOptions.Value.ReconnectMaxDelaySeconds);
     }
 
-    public IAsyncEnumerable<Candle> StreamOneMinuteCandlesAsync(string instrumentId, CancellationToken ct)
+    public IAsyncEnumerable<Candle> SubscribeAsync(string instrumentId, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(instrumentId))
+        {
+            throw new ArgumentException("Instrument id is required.", nameof(instrumentId));
+        }
+
+        Channel<Candle> channel;
+        lock (_gate)
+        {
+            if (!_subscriptions.TryGetValue(instrumentId, out channel!))
+            {
+                channel = Channel.CreateUnbounded<Candle>(new UnboundedChannelOptions
+                {
+                    SingleReader = true,
+                    SingleWriter = true,
+                });
+                _subscriptions[instrumentId] = channel;
+            }
+        }
+
+        RequestRestart();
+        EnsureWorkerRunning();
+        return ReadAsync(instrumentId, channel, ct);
+    }
+
+    private async IAsyncEnumerable<Candle> ReadAsync(
+        string instrumentId,
+        Channel<Candle> channel,
+        [EnumeratorCancellation] CancellationToken ct)
+    {
+        var registration = ct.Register(() => Unsubscribe(instrumentId));
+        try
+        {
+            await foreach (var candle in channel.Reader.ReadAllAsync(ct).ConfigureAwait(false))
+            {
+                yield return candle;
+            }
+        }
+        finally
+        {
+            Unsubscribe(instrumentId);
+            registration.Dispose();
+        }
+    }
+
+    private void Unsubscribe(string instrumentId)
+    {
+        Channel<Candle>? channel;
+        lock (_gate)
+        {
+            if (!_subscriptions.Remove(instrumentId, out channel))
+            {
+                return;
+            }
+        }
+
+        channel!.Writer.TryComplete();
+        RequestRestart();
+    }
+
+    private void RequestRestart() => Volatile.Write(ref _restartRequested, true);
+
+    private void EnsureWorkerRunning()
+    {
+        if (_worker is not null && !_worker.IsCompleted)
+        {
+            return;
+        }
+
+        _workerCts?.Dispose();
+        _workerCts = new CancellationTokenSource();
+        var ct = _workerCts.Token;
+        _worker = Task.Run(() => RunWorkerAsync(ct), ct);
+    }
+
+    private async Task RunWorkerAsync(CancellationToken ct)
+    {
+        TimeSpan delay = _reconnectStart;
+        while (!ct.IsCancellationRequested)
+        {
+            List<string> ids;
+            lock (_gate)
+            {
+                ids = _subscriptions.Keys.ToList();
+                if (ids.Count == 0)
+                {
+                    _logger.LogDebug("Market data multiplexer has no subscriptions; exiting");
+                    return;
+                }
+            }
+
+            var request = BuildRequest(ids);
+            _logger.LogDebug("Opening shared market data stream for {Count} instruments", ids.Count);
+            AsyncServerStreamingCall<MarketDataResponse> call = _connection.MarketDataStream.MarketDataServerSideStream(
+                request,
+                new CallOptions(headers: _connection.Metadata, cancellationToken: ct));
+
+            try
+            {
+                await foreach (var message in call.ResponseStream.ReadAllAsync(ct).ConfigureAwait(false))
+                {
+                    if (Volatile.Read(ref _restartRequested))
+                    {
+                        Volatile.Write(ref _restartRequested, false);
+                        _logger.LogDebug("Subscription set changed; reopening shared stream");
+                        break;
+                    }
+
+                    if (message.Candle is not null)
+                    {
+                        string uid = message.Candle.InstrumentUid;
+                        if (string.IsNullOrEmpty(uid))
+                        {
+                            continue;
+                        }
+
+                        Candle candle = TinkoffMappers.ToCandle(message.Candle);
+                        Channel<Candle>? target;
+                        lock (_gate)
+                        {
+                            _subscriptions.TryGetValue(uid, out target);
+                        }
+
+                        target?.Writer.TryWrite(candle);
+                    }
+                }
+
+                if (!Volatile.Read(ref _restartRequested))
+                {
+                    _logger.LogWarning("Shared market data stream ended; reconnecting");
+                    delay = _reconnectStart;
+                    await Task.Delay(delay, ct).ConfigureAwait(false);
+                }
+                else
+                {
+                    Volatile.Write(ref _restartRequested, false);
+                    await Task.Delay(150, ct).ConfigureAwait(false);
+                }
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Shared market data stream failed; reconnecting in {Delay}s", delay.TotalSeconds);
+                Volatile.Write(ref _restartRequested, false);
+                await Task.Delay(delay, ct).ConfigureAwait(false);
+                delay = TimeSpan.FromMilliseconds(Math.Min(delay.TotalMilliseconds * 2, _reconnectMax.TotalMilliseconds));
+            }
+            finally
+            {
+                call.Dispose();
+            }
+        }
+    }
+
+    private static MarketDataServerSideStreamRequest BuildRequest(IReadOnlyList<string> instrumentIds)
     {
         var request = new MarketDataServerSideStreamRequest
         {
@@ -30,36 +211,42 @@ public sealed class TinkoffMarketDataGateway : IMarketDataGateway
                 SubscriptionAction = SubscriptionAction.Subscribe,
                 Instruments =
                 {
-                    new CandleInstrument { InstrumentId = instrumentId, Interval = SubscriptionInterval.OneMinute },
+                    instrumentIds.Select(id => new CandleInstrument
+                    {
+                        InstrumentId = id,
+                        Interval = SubscriptionInterval.OneMinute,
+                    }),
                 },
             },
             PingSettings = new PingDelaySettings { PingDelayMs = 30000 },
         };
-
-        var call = _connection.MarketDataStream.MarketDataServerSideStream(
-            request,
-            new CallOptions(headers: _connection.Metadata, cancellationToken: ct));
-        return Enumerate(call, ct);
+        return request;
     }
 
-    private static async IAsyncEnumerable<Candle> Enumerate(
-        AsyncServerStreamingCall<MarketDataResponse> call,
-        [EnumeratorCancellation] CancellationToken ct)
+    public async ValueTask DisposeAsync()
     {
-        try
+        _workerCts?.Cancel();
+        if (_worker is not null)
         {
-            while (await call.ResponseStream.MoveNext(ct).ConfigureAwait(false))
+            try
             {
-                var message = call.ResponseStream.Current;
-                if (message.Candle is not null)
-                {
-                    yield return TinkoffMappers.ToCandle(message.Candle);
-                }
+                await _worker.ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Market data multiplexer worker shutdown");
             }
         }
-        finally
+
+        _workerCts?.Dispose();
+        lock (_gate)
         {
-            call.Dispose();
+            foreach (var channel in _subscriptions.Values)
+            {
+                channel.Writer.TryComplete();
+            }
+
+            _subscriptions.Clear();
         }
     }
 }

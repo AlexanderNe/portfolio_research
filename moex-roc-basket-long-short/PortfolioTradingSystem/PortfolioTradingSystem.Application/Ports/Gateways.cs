@@ -3,13 +3,15 @@ using PortfolioTradingSystem.Domain.Models;
 namespace PortfolioTradingSystem.Application.Ports;
 
 /// <summary>
-/// Real-time 1-minute candle feed for one instrument. The sequence completes
-/// when the underlying stream ends or is cancelled; callers are responsible for
-/// reconnection (the implementing gateway raises transport errors as exceptions).
+/// Real-time 1-minute candle feed for one instrument (subscription model).
+/// The stream stays alive until the supplied token is cancelled. All callers share a
+/// single underlying connection where possible; the gateway reconnects transparently,
+/// so an enumerable completes only when unsubscribed or cancelled — callers do NOT
+/// need their own reconnection logic.
 /// </summary>
 public interface IMarketDataGateway
 {
-    IAsyncEnumerable<Candle> StreamOneMinuteCandlesAsync(string figi, CancellationToken ct);
+    IAsyncEnumerable<Candle> SubscribeAsync(string instrumentId, CancellationToken ct);
 }
 
 /// <summary>Historical daily bars from the T-Bank API (warm-up history).</summary>

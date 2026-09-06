@@ -61,6 +61,12 @@ agent, not for end users (see `README.md` for user/developer docs).
   restored from `OpenPositions`. Pause/resume within the same session resets
   `_enteredThisSession` — a flat same-day re-entry is possible after resume.
 - Stream reconnect: exponential backoff 2s → 60s.
+- Market data feeds: `TinkoffMarketDataMultiplexer` multiplexes ALL instruments over ONE
+  `MarketDataServerSideStream` connection (T-Bank limit: 32 simultaneous quotes streams,
+  300 subscriptions per stream, counter refreshes every 2 min). Error 80001 = "Limit of
+  open streams exceeded"; a stream-per-engine design trips it. Port is now subscription
+  based: `IMarketDataGateway.SubscribeAsync(instrumentId, ct)` — channels survive stream
+  reconnect; on membership change the shared stream is reopened with the full set.
 
 ## Known caveats / watch-items
 

@@ -172,7 +172,7 @@ public sealed class InstrumentEngine : IAsyncDisposable
                         m.LastError = null;
                     });
 
-                    await foreach (var minute in _marketData.StreamOneMinuteCandlesAsync(TinkoffInstrumentId, ct).ConfigureAwait(false))
+                    await foreach (var minute in _marketData.SubscribeAsync(TinkoffInstrumentId, ct).ConfigureAwait(false))
                     {
                         if (ct.IsCancellationRequested)
                         {
@@ -185,7 +185,7 @@ public sealed class InstrumentEngine : IAsyncDisposable
                     delay = _reconnectStart;
                     if (!ct.IsCancellationRequested)
                     {
-                        _logger.LogWarning("Stream for {Ticker} ended; reconnecting...", Ticker);
+                        _logger.LogWarning("Subscription for {Ticker} ended; resubscribing...", Ticker);
                         await Task.Delay(TimeSpan.FromSeconds(1), ct).ConfigureAwait(false);
                     }
                 }

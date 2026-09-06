@@ -2,6 +2,9 @@
 **/bin/
 **/obj/
 
+# Runtime logs
+**/logs/
+
 # Python
 __pycache__/
 *.py[cod]
