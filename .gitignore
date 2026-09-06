@@ -4,6 +4,7 @@
 
 # Runtime logs
 **/logs/
+moex-roc-basket-long-short/PortfolioTradingSystem/PortfolioTradingSystem.Api/logs
 
 # Python
 __pycache__/
