@@ -1,37 +1,98 @@
-# Роc-импульс корзина MOEX: долгие + короткие, без плеча
+﻿# moex-roc-basket-long-short
 
-Исследовательский отчёт по дневной ROC-импульсной стратегии на корзине из 40
-ликвидных акций MOEX (лонги + шорты через фьючерсы, без заёмного плеча,
-`leverage=1`).
+A daily **ROC-momentum basket** of 40 liquid MOEX stocks, **long + short, with
+no leverage** (`leverage = 1`, per-trade notional <= cash). This is the validated
+(walk-forward OOS) configuration of the `roc_momentum` algorithm on daily bars —
+the same one previously run at 7x leverage and long-only, now without margin
+financing and shorting via stock futures on the underlying.
 
-## Как смотреть
+> **Headline result (OOS, 4.0M RUB pool, 9.1 years):** **+8,043,568 RUB = +201.1% =
+> +22.1%/yr**, pool maxDD -9.3%, 7,192 trades, win 50.2%, avg +1,118 RUB/trade,
+> PF 1.40, **40/40 names and 9/10 years positive**.
 
-- `longs_and_shorts.html` — **основной документ** (открыть в браузере).
-  Широкие графики сигналов прокручиваются по горизонтали внутри рамки.
-- `longs_and_shorts.md` — та же презентация в Markdown (удобно в GitHub-рендере).
+---
 
-## Что внутри
+## Idea
 
-- **Идея:** ежедневный ROC-импульс `roc_momentum` (свечи 24h), риск 10% на
-  бумагу, стоп 2·ATR / тейк 3·ATR, комиссия 0.04%, walk-forward 504/126.
-  Длинные позиции держатся овернайт, короткие исполнены фьючерсами
-  на базовый актив (риск = номинал ≤ кэш, без маржинального финансирования).
-- **Результат (валёрный walk-forward OOS, пул 4.0 М ₽, 9.1 года):**
-  **+8 043 568 ₽ = +201.1% = +22.1%/год**, просадка пула −9.3%,
-  7 192 сделки, 40/40 бумаг и 9/10 лет положительны.
-- **Выход по сделкам:** короткие 47% сделок дают 53% прибыли (PF 1.41),
-  длинные PF 1.39 — обе стороны прибыльны независимо.
+- **Signal.** At the close of day *i*, `ROC_n = close / close[i-n] - 1` (n = 5).
+  If `ROC > 0.01` -> long; if `ROC < -0.01` -> short.
+- **Entry.** On the next bar's open. At most one open position per name.
+- **Exit.** Stop 2*ATR or take-profit 3*ATR (ATR known at decision time - no
+  look-ahead). Trailing stop off.
+- **Position sizing.** `units = risk% * equity / (2*ATR)`, capped so
+  `notional <= cash` (leverage 1). At risk 10% positions saturate to "all-in".
+- **No leverage.** Shorts are executed via stock futures - no overnight margin
+  / borrow financing, so the whole package is executable in practice.
 
-## Структура
+## Configuration
+
+| Parameter | Value |
+|---|---|
+| Algorithm | `roc_momentum`, n=5, threshold=0.01 |
+| Bar | MOEX daily (interval 24), 2015/2017 -> 2026-08 |
+| Universe | 40 names = 25 original + 15 added (see `universe.py`) |
+| Sides | long + short |
+| Leverage | 1 (no borrowed money) |
+| Stops | SL 2*ATR / TP 3*ATR, trail 0 |
+| Commission | 0.04% of turnover (T-Bank "Trader" tariff, futures-style) |
+| Walk-forward | train 504 bars / OOS 126 bars, min_trades 3 |
+| Risk (test) | 10% (risk table in the report) |
+| Pool | 4.0M RUB (100k per name) |
+
+## Results (walk-forward OOS)
+
+- **+8,043,568 RUB = +201.1% over 9.1 years = +22.1%/yr**, pool maxDD **-9.3%**,
+  7,192 trades, win 50.2%, avg +1,118 RUB, PF 1.40.
+- **Long/short split:** shorts 3,379 trades (47%) = +4,291,635 RUB (53% of
+  profit), PF 1.41; longs 3,813 trades = +3,751,932 RUB, PF 1.39. Both sides
+  independently profitable.
+- **Coverage:** 40/40 names positive, 9/10 years positive (only 2018 = -3.4%,
+  a "bear" year where shorts partly offset longs).
+- **Risk scan (leverage 1):** 1% -> +4.0%/-1.4%; 5% -> +18.2%/-5.3%;
+  10% -> +22.1%/-9.3%; 15% -> +22.0%/-12.5% (saturates ~10%: beyond that positions
+  are already all-in, only the drawdown grows).
+- **Reference only (NOT a recommendation):** same with 2x leverage ->
+  +39.3%/yr/-9.0%; 3x -> +46.2%/-11.6%; 5-10x -> ~+47.5%/-13%. Leverage is
+  **forbidden** here: margin financing is not modeled.
+
+## Contents
 
 ```
-longs_and_shorts.html   — отчёт (HTML, самодостаточный)
-longs_and_shorts.md     — отчёт (Markdown-исходник)
-images/                 — 16 графиков (8 общих + 8 сигнальных)
+report/report.html  - report (main document; open in browser, wide
+                                signal charts scroll horizontally)
+report/report.md    - same report in Markdown (renders on GitHub)
+report/images/                - 16 charts (8 general + 8 signal)
+report/tables/                - report CSVs + walk-forward run cache (_cache/)
+|
+report_build.py               - report builder (rebuild everything)
+strategy_research.py          - backtest framework (walk-forward, ROC-momentum,
+                                simulator with SL/TP and risk sizing)
+universe.py                 - shared 40-name universe (ORIG = 25 + NEW = 15) and
+                                IMOEX per-year returns helper
+moex_data_downloader.py       - MOEX daily-bar downloader (ISS API)
+data/candles_ru_daily/        - source daily bars (43 CSVs, 2015/2017 -> 2026-08)
 ```
 
-## Дисклеймер
+## How to reproduce
 
-Backtest не моделирует: квартальный ролл фьючерсов (карьи перенос в цене
-фьючерса), гэпы по стопам в дни лимитных остановок, макроэкономический шок
-коротких. Числа — теоретический потолок алгоритма, НЕ торговая рекомендация.
+```powershell
+# 1. dependencies
+pip install -r requirements.txt
+
+# 2. (optional) fetch fresh daily bars into data/candles_ru_daily/
+python moex_data_downloader.py --stocks AFLT,ALRS,...,VTBR --interval 24 --days 4250
+
+# 3. rebuild the report (uses the run cache; full walk-forwards recomputed if needed)
+python report_build.py
+```
+
+The build scripts expect data in
+`data/candles_ru_daily/` - relative paths are already set, nothing to configure.
+
+## Disclaimer
+
+The backtest does **not** model: quarterly futures roll (carry is in the futures
+price), stop gap-through on limit-down days, or liquidity at 10-15% notional in a
+mid-cap. The numbers are a theoretical ceiling of the algorithm on historical
+data, **not a trading recommendation**. Past performance does not guarantee
+future returns.

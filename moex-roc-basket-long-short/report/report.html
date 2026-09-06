@@ -1,19 +1,13 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="ru">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Портфельная стратегия ROC-импульс на дневных барах MOEX — лонги и шорты</title>
 <style>
-  body {
-    font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
-    max-width: 1100px;
-    margin: 0 auto;
-    padding: 24px 32px 80px;
-    color: #1a1a1a;
-    line-height: 1.55;
-    background: #fff;
-  }
+  body { font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+         max-width: 1100px; margin: 0 auto; padding: 24px 32px 80px;
+         color: #1a1a1a; line-height: 1.55; background: #fff; }
   h1 { font-size: 1.7em; border-bottom: 2px solid #1257a0; padding-bottom: 8px; }
   h2 { font-size: 1.3em; color: #1257a0; margin-top: 40px; }
   table { border-collapse: collapse; margin: 16px 0; width: 100%; font-size: 0.92em; }
@@ -23,16 +17,9 @@
   code { background: #f2f2f2; padding: 1px 4px; border-radius: 3px; font-size: 0.9em; }
   ul, ol { padding-left: 24px; }
   em { color: #555; }
-  /* normal report charts: fit container */
   img.normal { max-width: 100%; height: auto; display: block; margin: 16px auto; }
-  /* very wide signal charts: scroll horizontally, never squeezed */
-  .scroll {
-    overflow-x: auto;
-    border: 1px solid #ddd;
-    border-radius: 6px;
-    margin: 8px 0 20px;
-    background: #fbfbfb;
-  }
+  .scroll { overflow-x: auto; border: 1px solid #ddd; border-radius: 6px;
+            margin: 8px 0 20px; background: #fbfbfb; }
   .scroll img { display: block; height: auto; }
   .signal-name { margin: 20px 0 4px; font-weight: bold; color: #1257a0; }
   .hint { font-weight: normal; font-size: 0.85em; color: #777; }
@@ -51,7 +38,7 @@
 <tr><td>Совокупный результат OOS</td><td><strong>+8 043 568 ₽ = +201,1%</strong> на пул 4,0 млн ₽</td></tr>
 <tr><td>Доходность</td><td><strong>+22,1% в год</strong> (9,1 года)</td></tr>
 <tr><td>Макс. просадка пула</td><td><strong>−9,3%</strong></td></tr>
-<tr><td>Сделок</td><td>7 192 (~65 в месяц по пулу, ~1,6 на бумагу)</td></tr>
+<tr><td>Сделок</td><td>7 192 (~66 в месяц по пулу, ~1,6 на бумагу)</td></tr>
 <tr><td>Доля прибыльных OOS-фолдов</td><td>64,7% (440 из 680)</td></tr>
 <tr><td>Win rate по сделкам</td><td>50,2%</td></tr>
 <tr><td>Средняя сделка</td><td>+1 118 ₽</td></tr>
@@ -64,9 +51,9 @@
 <hr>
 
 <h2>1. Резюме</h2>
-<p>Портфельная стратегия <strong>ROC-импульс на дневных барах</strong> (40 бумаг MOEX, walk-forward 504/126, комиссия 0,04%, стоп 2·ATR / тейк 3·ATR) с разрешёнными <strong>шортами</strong>. Плечо <strong>не используется</strong>: номинал позиции не превышает наличных денег.</p>
-<p>Шорты зарабатывают именно в падающем рынке: 2022 (+40,0%), 2024 (+23,7%), 2025 (+14,3%), 2026 (+36,4%). В годы роста рынка они слегка ослабляют результат (2019: +8,1%), что является платой за страховку от медвежьих лет.</p>
-<p><strong>Итог: 9 из 10 лет в плюсе, все 40 бумаг прибыльны.</strong></p>
+<p>Портфельная стратегия <strong>ROC-импульс на дневных барах</strong> (40 бумаг MOEX, walk-forward 504/126, комиссия 0,04%, стоп 2·ATR / тейк 3·ATR) с разрешёнными <strong>шортами</strong>. Плечо <strong>не используется</strong>: номинал позиции не превышает наличных денег.&lt;/p&gt;
+&lt;p&gt;Шорты зарабатывают именно в падающем рынке: 2022 (+40,0%), 2024 (+23,7%), 2025 (+14,3%), 2026 (+36,4%). В годы роста рынка они слегка ослабляют результат (2019: +8,1%), что является платой за страховку от медвежьих лет.&lt;/p&gt;
+&lt;p&gt;<strong>Итог: 9 из 10 лет в плюсе, все 40 бумаг прибыльны.</strong></p>
 
 <hr>
 
@@ -83,7 +70,7 @@
 <tr><td>Размер позиции</td><td>риск% от 100 тыс. ₽ субсчёта на сделку</td></tr>
 <tr><td>Оценка</td><td>walk-forward: обучение 504 бара → тест 126 баров, лучший параметр на обучении</td></tr>
 <tr><td>Бумаги</td><td>40 (ORIG 25 + NEW 15), по 100 тыс. ₽ на бумагу, пул 4,0 млн ₽</td></tr>
-<tr><td>Пустой период</td><td>2017-06 … 2026-08 (9,1 года OOS)</td></tr>
+<tr><td>Период OOS</td><td>2017-01 … 2026-08 (9,1 года OOS)</td></tr>
 </table>
 
 <hr>
@@ -100,7 +87,7 @@
 
 <h2>4. Портфель в цифрах (лонги+шорты, без плеча)</h2>
 <table>
-<tr><th>Метрика</th><th>Лонги + шорты (лев 1)</th></tr>
+<tr><th>Метрика</th><th><strong>Лонги + шорты (лев 1)</strong></th></tr>
 <tr><td>Совокупный OOS</td><td><strong>+8,04 млн ₽ (+201%)</strong></td></tr>
 <tr><td>В год</td><td><strong>+22,1%</strong></td></tr>
 <tr><td>Макс. просадка пула</td><td><strong>−9,3%</strong></td></tr>
@@ -109,7 +96,7 @@
 <tr><td>Средняя сделка</td><td>+1 118 ₽</td></tr>
 <tr><td>Profit Factor</td><td>1,40</td></tr>
 <tr><td>Средний удерж.</td><td>16,2 дн</td></tr>
-<tr><td>Средний выигрыш/проигрыш</td><td>+7 745 / −5 549 ₽</td></tr>
+<tr><td>Средний выигрыш/проигрыш</td><td>+7 745 ₽ / −5 549 ₽</td></tr>
 <tr><td>Положительных бумаг</td><td><strong>40/40</strong></td></tr>
 <tr><td>Положительных лет</td><td><strong>9/10</strong></td></tr>
 </table>
@@ -126,7 +113,7 @@
 <tr><th></th><th><strong>Шорты</strong></th><th><strong>Лонги</strong></th></tr>
 <tr><td>Сделок</td><td>3 379 (47,0%)</td><td>3 813 (53,0%)</td></tr>
 <tr><td>Совокупный PnL</td><td><strong>+4 291 635 ₽ (53% прибыли)</strong></td><td>+3 751 932 ₽ (47%)</td></tr>
-<tr><td>Win rate</td><td>49,8%</td><td>50,5%</td></tr>
+<tr><td>Win rate</td><td>49,7%</td><td>50,5%</td></tr>
 <tr><td>Средняя сделка</td><td>+1 270 ₽</td><td>+984 ₽</td></tr>
 <tr><td>Profit Factor</td><td>1,41</td><td>1,39</td></tr>
 <tr><td>Средний удерж.</td><td>17,0 дн</td><td>15,5 дн</td></tr>
@@ -173,16 +160,16 @@
 <h2>8. Доходность по годам</h2>
 <table>
 <tr><th>Год</th><th>PnL, ₽</th><th>% (пул 4,0 млн)</th><th>IMOEX, %</th><th>Сделок</th><th>Win, %</th><th>Средняя</th></tr>
-<tr><td>2017</td><td>+336 266</td><td>+8,4%</td><td>+12,0</td><td>457</td><td>46,6</td><td>+736</td></tr>
-<tr><td>2018</td><td>−134 243</td><td>−3,4%</td><td>+11,8</td><td>688</td><td>41,9</td><td>−195</td></tr>
-<tr><td>2019</td><td>+324 762</td><td>+8,1%</td><td>+29,1</td><td>645</td><td>47,8</td><td>+504</td></tr>
-<tr><td>2020</td><td>+1 218 694</td><td>+30,5%</td><td>+8,0</td><td>837</td><td>53,1</td><td>+1 456</td></tr>
-<tr><td>2021</td><td>+610 943</td><td>+15,3%</td><td>+15,2</td><td>774</td><td>50,4</td><td>+789</td></tr>
-<tr><td>2022</td><td>+1 598 077</td><td>+40,0%</td><td>−43,1</td><td>684</td><td>52,6</td><td>+2 336</td></tr>
-<tr><td>2023</td><td>+1 116 949</td><td>+27,9%</td><td>+43,9</td><td>910</td><td>52,4</td><td>+1 227</td></tr>
-<tr><td>2024</td><td>+946 606</td><td>+23,7%</td><td>−7,0</td><td>965</td><td>49,5</td><td>+981</td></tr>
-<tr><td>2025</td><td>+571 095</td><td>+14,3%</td><td>−4,0</td><td>721</td><td>48,3</td><td>+792</td></tr>
-<tr><td>2026</td><td>+1 454 420</td><td>+36,4%</td><td>−23,6</td><td>511</td><td>58,9</td><td>+2 846</td></tr>
+<tr><td>2017</td><td>+336 266 ₽</td><td>+8,4%</td><td>+12,0</td><td>457</td><td>46,6</td><td>+736</td></tr>
+<tr><td>2018</td><td>−134 243 ₽</td><td>−3,4%</td><td>+11,8</td><td>688</td><td>41,9</td><td>−195</td></tr>
+<tr><td>2019</td><td>+324 762 ₽</td><td>+8,1%</td><td>+29,1</td><td>645</td><td>47,8</td><td>+504</td></tr>
+<tr><td>2020</td><td>+1 218 694 ₽</td><td>+30,5%</td><td>+8,0</td><td>837</td><td>53,0</td><td>+1 456</td></tr>
+<tr><td>2021</td><td>+610 943 ₽</td><td>+15,3%</td><td>+15,1</td><td>774</td><td>50,4</td><td>+789</td></tr>
+<tr><td>2022</td><td>+1 598 077 ₽</td><td>+40,0%</td><td>−43,1</td><td>684</td><td>52,6</td><td>+2 336</td></tr>
+<tr><td>2023</td><td>+1 116 949 ₽</td><td>+27,9%</td><td>+43,9</td><td>910</td><td>52,4</td><td>+1 227</td></tr>
+<tr><td>2024</td><td>+946 606 ₽</td><td>+23,7%</td><td>−7,0</td><td>965</td><td>49,5</td><td>+981</td></tr>
+<tr><td>2025</td><td>+571 095 ₽</td><td>+14,3%</td><td>−4,0</td><td>721</td><td>48,3</td><td>+792</td></tr>
+<tr><td>2026</td><td>+1 454 420 ₽</td><td>+36,4%</td><td>−23,6</td><td>511</td><td>58,9</td><td>+2 846</td></tr>
 </table>
 <p>Единственный отрицательный год — 2018 (−3,4%). В годы падения индекса (2022, 2024, 2025, 2026) стратегия показывает положительные результаты именно за счёт шортов.</p>
 
@@ -193,7 +180,7 @@
 
 <h2>9. Риски и оговорки (обязательно к прочтению)</h2>
 <ol>
-<li><strong>Это потолок, а не рекомендация.</strong> Как и в старой таблице <code>data/risk_scan.csv</code>, здесь <strong>не моделируются</strong> реальные издержки:
+<li><strong>Это потолок, а не рекомендация.</strong> Здесь <strong>не моделируются</strong> реальные издержки:
   <ul>
     <li><strong>плата за заёмный шорт</strong> (MOEX/брокер берёт за шорты; размер зависит от бумаги и срока) — не учтена;</li>
     <li>гэпы на шортах (лимитные дни, когда стоп 2·ATR «проколот» открытием);</li>
@@ -235,28 +222,28 @@
 </ul>
 
 <p class="signal-name"><strong>SBER — цена и сигналы (полная история)</strong> <span class="hint">— для просмотра прокручивайте изображение влево/вправо</span></p>
-<p class="metrics">PnL <strong>228 686 ₽</strong> (228,7% к 100 тыс.) · сделок 213 · лонги 175 465 ₽ / шорты 53 221 ₽ · maxDD -34,8%</p>
+<p class="metrics">PnL <strong>+228 686 ₽</strong> (+228,7% к 100 тыс.) · сделок 213 · лонги +175 465 ₽ / шорты +53 221 ₽ · maxDD -34,8%</p>
 <div class="scroll"><img src="images/signals_sber.png" alt="SBER — цена и сигналы"></div>
 <p class="signal-name"><strong>GAZP — цена и сигналы (полная история)</strong> <span class="hint">— для просмотра прокручивайте изображение влево/вправо</span></p>
-<p class="metrics">PnL <strong>198 875 ₽</strong> (198,9% к 100 тыс.) · сделок 207 · лонги 97 746 ₽ / шорты 101 129 ₽ · maxDD -43,8%</p>
+<p class="metrics">PnL <strong>+198 875 ₽</strong> (+198,9% к 100 тыс.) · сделок 207 · лонги +97 746 ₽ / шорты +101 129 ₽ · maxDD -43,8%</p>
 <div class="scroll"><img src="images/signals_gazp.png" alt="GAZP — цена и сигналы"></div>
 <p class="signal-name"><strong>ALRS — цена и сигналы (полная история)</strong> <span class="hint">— для просмотра прокручивайте изображение влево/вправо</span></p>
-<p class="metrics">PnL <strong>245 709 ₽</strong> (245,7% к 100 тыс.) · сделок 214 · лонги 45 836 ₽ / шорты 199 874 ₽ · maxDD -22,9%</p>
+<p class="metrics">PnL <strong>+245 709 ₽</strong> (+245,7% к 100 тыс.) · сделок 214 · лонги +45 836 ₽ / шорты +199 874 ₽ · maxDD -22,9%</p>
 <div class="scroll"><img src="images/signals_alrs.png" alt="ALRS — цена и сигналы"></div>
 <p class="signal-name"><strong>LKOH — цена и сигналы (полная история)</strong> <span class="hint">— для просмотра прокручивайте изображение влево/вправо</span></p>
-<p class="metrics">PnL <strong>196 447 ₽</strong> (196,4% к 100 тыс.) · сделок 213 · лонги 134 578 ₽ / шорты 61 869 ₽ · maxDD -43,2%</p>
+<p class="metrics">PnL <strong>+196 447 ₽</strong> (+196,4% к 100 тыс.) · сделок 213 · лонги +134 578 ₽ / шорты +61 869 ₽ · maxDD -43,2%</p>
 <div class="scroll"><img src="images/signals_lkoh.png" alt="LKOH — цена и сигналы"></div>
 <p class="signal-name"><strong>ROSN — цена и сигналы (полная история)</strong> <span class="hint">— для просмотра прокручивайте изображение влево/вправо</span></p>
-<p class="metrics">PnL <strong>45 693 ₽</strong> (45,7% к 100 тыс.) · сделок 202 · лонги 46 738 ₽ / шорты -1 045 ₽ · maxDD -46,0%</p>
+<p class="metrics">PnL <strong>+45 693 ₽</strong> (+45,7% к 100 тыс.) · сделок 202 · лонги +46 738 ₽ / шорты −1 045 ₽ · maxDD -46,0%</p>
 <div class="scroll"><img src="images/signals_rosn.png" alt="ROSN — цена и сигналы"></div>
 <p class="signal-name"><strong>NLMK — цена и сигналы (полная история)</strong> <span class="hint">— для просмотра прокручивайте изображение влево/вправо</span></p>
-<p class="metrics">PnL <strong>391 131 ₽</strong> (391,1% к 100 тыс.) · сделок 198 · лонги 164 510 ₽ / шорты 226 621 ₽ · maxDD -17,6%</p>
+<p class="metrics">PnL <strong>+391 131 ₽</strong> (+391,1% к 100 тыс.) · сделок 198 · лонги +164 510 ₽ / шорты +226 621 ₽ · maxDD -17,6%</p>
 <div class="scroll"><img src="images/signals_nlmk.png" alt="NLMK — цена и сигналы"></div>
 <p class="signal-name"><strong>CHMF — цена и сигналы (полная история)</strong> <span class="hint">— для просмотра прокручивайте изображение влево/вправо</span></p>
-<p class="metrics">PnL <strong>269 071 ₽</strong> (269,1% к 100 тыс.) · сделок 201 · лонги 164 034 ₽ / шорты 105 037 ₽ · maxDD -27,3%</p>
+<p class="metrics">PnL <strong>+269 071 ₽</strong> (+269,1% к 100 тыс.) · сделок 201 · лонги +164 034 ₽ / шорты +105 037 ₽ · maxDD -27,3%</p>
 <div class="scroll"><img src="images/signals_chmf.png" alt="CHMF — цена и сигналы"></div>
 <p class="signal-name"><strong>TATN — цена и сигналы (полная история)</strong> <span class="hint">— для просмотра прокручивайте изображение влево/вправо</span></p>
-<p class="metrics">PnL <strong>227 419 ₽</strong> (227,4% к 100 тыс.) · сделок 202 · лонги 169 694 ₽ / шорты 57 725 ₽ · maxDD -44,2%</p>
+<p class="metrics">PnL <strong>+227 419 ₽</strong> (+227,4% к 100 тыс.) · сделок 202 · лонги +169 694 ₽ / шорты +57 725 ₽ · maxDD -44,2%</p>
 <div class="scroll"><img src="images/signals_tatn.png" alt="TATN — цена и сигналы"></div>
 
 <p>Примерный календарь событий по графику SBER: летом 2026 г. на фоне падения рынка работают преимущественно короткие сигналы (▼), в периоды отскоков — покупки (▲). PnL в заголовке каждого графика — суммарный результат по закрытым в окне сделкам (за всю историю совпадает с итогами из таблицы приложения); отрицательный PnL по какой-то одной бумаге в коротком окне является нормальной дисперсией: доходность даёт корзина из 40 имён, а не отдельная позиция.</p>
@@ -266,48 +253,48 @@
 <h2>Приложение. Все 40 бумаг (OOS, риск 10%, лонги+шорты, без плеча)</h2>
 <table>
 <tr><th>Бумага</th><th>PnL, ₽</th><th>% на 100 тыс.</th><th>Сделок</th><th>Лонги, ₽</th><th>Шорты, ₽</th><th>Просадка, %</th></tr>
-<tr><td>PIKK</td><td>+393 631</td><td>+393,6</td><td>187</td><td>+263 066</td><td>+130 565</td><td>-88,8%</td></tr>
-<tr><td>NLMK</td><td>+391 131</td><td>+391,1</td><td>198</td><td>+164 510</td><td>+226 621</td><td>-17,6%</td></tr>
-<tr><td>OGKB</td><td>+358 015</td><td>+358,0</td><td>188</td><td>+146 445</td><td>+211 570</td><td>-14,9%</td></tr>
-<tr><td>MGNT</td><td>+305 735</td><td>+305,7</td><td>197</td><td>+74 422</td><td>+231 313</td><td>-37,1%</td></tr>
-<tr><td>SMLT</td><td>+303 104</td><td>+303,1</td><td>55</td><td>−17 023</td><td>+320 128</td><td>-11,8%</td></tr>
-<tr><td>AFLT</td><td>+298 542</td><td>+298,5</td><td>208</td><td>+86 475</td><td>+212 067</td><td>-16,3%</td></tr>
-<tr><td>RUAL</td><td>+284 519</td><td>+284,5</td><td>181</td><td>+167 057</td><td>+117 462</td><td>-25,2%</td></tr>
-<tr><td>MVID</td><td>+276 427</td><td>+276,4</td><td>194</td><td>+105 924</td><td>+170 503</td><td>-36,1%</td></tr>
-<tr><td>CHMF</td><td>+269 071</td><td>+269,1</td><td>201</td><td>+164 034</td><td>+105 037</td><td>-27,3%</td></tr>
-<tr><td>MAGN</td><td>+263 955</td><td>+264,0</td><td>177</td><td>+80 063</td><td>+183 892</td><td>-18,4%</td></tr>
-<tr><td>BSPB</td><td>+261 032</td><td>+261,0</td><td>190</td><td>+237 189</td><td>+23 842</td><td>-50,1%</td></tr>
-<tr><td>TGKA</td><td>+252 500</td><td>+252,5</td><td>169</td><td>+56 992</td><td>+195 508</td><td>-39,9%</td></tr>
-<tr><td>ALRS</td><td>+245 709</td><td>+245,7</td><td>214</td><td>+45 836</td><td>+199 874</td><td>-22,9%</td></tr>
-<tr><td>SBER</td><td>+228 686</td><td>+228,7</td><td>213</td><td>+175 465</td><td>+53 221</td><td>-34,8%</td></tr>
-<tr><td>TATN</td><td>+227 419</td><td>+227,4</td><td>202</td><td>+169 694</td><td>+57 725</td><td>-44,2%</td></tr>
-<tr><td>SIBN</td><td>+220 293</td><td>+220,3</td><td>217</td><td>+170 014</td><td>+50 279</td><td>-21,0%</td></tr>
-<tr><td>VKCO</td><td>+215 836</td><td>+215,8</td><td>49</td><td>−4 898</td><td>+220 733</td><td>-19,2%</td></tr>
-<tr><td>MOEX</td><td>+205 864</td><td>+205,9</td><td>185</td><td>+118 344</td><td>+87 520</td><td>-31,2%</td></tr>
-<tr><td>NVTK</td><td>+199 677</td><td>+199,7</td><td>192</td><td>+125 748</td><td>+73 928</td><td>-39,9%</td></tr>
-<tr><td>GAZP</td><td>+198 875</td><td>+198,9</td><td>207</td><td>+97 746</td><td>+101 129</td><td>-43,8%</td></tr>
-<tr><td>LKOH</td><td>+196 447</td><td>+196,4</td><td>213</td><td>+134 578</td><td>+61 869</td><td>-43,2%</td></tr>
-<tr><td>MRKC</td><td>+193 585</td><td>+193,6</td><td>211</td><td>+171 124</td><td>+22 460</td><td>-41,6%</td></tr>
-<tr><td>SBERP</td><td>+185 794</td><td>+185,8</td><td>209</td><td>+166 700</td><td>+19 095</td><td>-15,8%</td></tr>
-<tr><td>FEES</td><td>+185 363</td><td>+185,4</td><td>173</td><td>−14 750</td><td>+200 113</td><td>-33,9%</td></tr>
-<tr><td>SNGS</td><td>+182 521</td><td>+182,5</td><td>180</td><td>+36 590</td><td>+145 930</td><td>-27,7%</td></tr>
-<tr><td>VTBR</td><td>+178 428</td><td>+178,4</td><td>196</td><td>+28 526</td><td>+149 902</td><td>-52,0%</td></tr>
-<tr><td>POLY</td><td>+174 389</td><td>+174,4</td><td>162</td><td>+51 718</td><td>+122 671</td><td>-59,4%</td></tr>
-<tr><td>IMOEX</td><td>+167 292</td><td>+167,3</td><td>228</td><td>+75 281</td><td>+92 011</td><td>-23,0%</td></tr>
-<tr><td>RTKMP</td><td>+158 741</td><td>+158,7</td><td>119</td><td>+70 067</td><td>+88 674</td><td>-14,6%</td></tr>
-<tr><td>PLZL</td><td>+146 690</td><td>+146,7</td><td>219</td><td>+163 030</td><td>−16 340</td><td>-34,8%</td></tr>
-<tr><td>KMAZ</td><td>+141 209</td><td>+141,2</td><td>185</td><td>+28 298</td><td>+112 911</td><td>-67,8%</td></tr>
-<tr><td>MTSS</td><td>+111 245</td><td>+111,2</td><td>163</td><td>+77 845</td><td>+33 400</td><td>-44,5%</td></tr>
-<tr><td>IRAO</td><td>+108 120</td><td>+108,1</td><td>158</td><td>+27 058</td><td>+81 062</td><td>-47,6%</td></tr>
-<tr><td>GMKN</td><td>+106 924</td><td>+106,9</td><td>202</td><td>+111 120</td><td>−4 197</td><td>-51,2%</td></tr>
-<tr><td>HYDR</td><td>+96 572</td><td>+96,6</td><td>164</td><td>+825</td><td>+95 747</td><td>-51,0%</td></tr>
-<tr><td>POSI</td><td>+92 199</td><td>+92,2</td><td>60</td><td>−6 916</td><td>+99 115</td><td>-36,1%</td></tr>
-<tr><td>TRNFP</td><td>+75 085</td><td>+75,1</td><td>191</td><td>+20 994</td><td>+54 091</td><td>-42,2%</td></tr>
-<tr><td>SNGSP</td><td>+62 498</td><td>+62,5</td><td>177</td><td>+84 709</td><td>−22 211</td><td>-49,3%</td></tr>
-<tr><td>ROSN</td><td>+45 693</td><td>+45,7</td><td>202</td><td>+46 738</td><td>−1 045</td><td>-46,0%</td></tr>
-<tr><td>CBOM</td><td>+34 753</td><td>+34,8</td><td>156</td><td>+51 293</td><td>−16 539</td><td>-41,5%</td></tr>
+<tr><td>PIKK</td><td>+393 631 ₽</td><td>+393,6</td><td>187</td><td>+263 066 ₽</td><td>+130 565 ₽</td><td>-88,7%</td></tr>
+<tr><td>NLMK</td><td>+391 131 ₽</td><td>+391,1</td><td>198</td><td>+164 510 ₽</td><td>+226 621 ₽</td><td>-17,6%</td></tr>
+<tr><td>OGKB</td><td>+358 015 ₽</td><td>+358,0</td><td>188</td><td>+146 445 ₽</td><td>+211 570 ₽</td><td>-14,9%</td></tr>
+<tr><td>MGNT</td><td>+305 735 ₽</td><td>+305,7</td><td>197</td><td>+74 422 ₽</td><td>+231 313 ₽</td><td>-37,1%</td></tr>
+<tr><td>SMLT</td><td>+303 104 ₽</td><td>+303,1</td><td>55</td><td>−17 023 ₽</td><td>+320 128 ₽</td><td>-11,8%</td></tr>
+<tr><td>AFLT</td><td>+298 542 ₽</td><td>+298,5</td><td>208</td><td>+86 475 ₽</td><td>+212 067 ₽</td><td>-16,3%</td></tr>
+<tr><td>RUAL</td><td>+284 519 ₽</td><td>+284,5</td><td>181</td><td>+167 057 ₽</td><td>+117 462 ₽</td><td>-25,2%</td></tr>
+<tr><td>MVID</td><td>+276 427 ₽</td><td>+276,4</td><td>194</td><td>+105 924 ₽</td><td>+170 503 ₽</td><td>-36,1%</td></tr>
+<tr><td>CHMF</td><td>+269 071 ₽</td><td>+269,1</td><td>201</td><td>+164 034 ₽</td><td>+105 037 ₽</td><td>-27,3%</td></tr>
+<tr><td>MAGN</td><td>+263 955 ₽</td><td>+264,0</td><td>177</td><td>+80 063 ₽</td><td>+183 892 ₽</td><td>-18,4%</td></tr>
+<tr><td>BSPB</td><td>+261 032 ₽</td><td>+261,0</td><td>190</td><td>+237 189 ₽</td><td>+23 842 ₽</td><td>-50,1%</td></tr>
+<tr><td>TGKA</td><td>+252 500 ₽</td><td>+252,5</td><td>169</td><td>+56 992 ₽</td><td>+195 508 ₽</td><td>-39,9%</td></tr>
+<tr><td>ALRS</td><td>+245 709 ₽</td><td>+245,7</td><td>214</td><td>+45 836 ₽</td><td>+199 874 ₽</td><td>-22,9%</td></tr>
+<tr><td>SBER</td><td>+228 686 ₽</td><td>+228,7</td><td>213</td><td>+175 465 ₽</td><td>+53 221 ₽</td><td>-34,8%</td></tr>
+<tr><td>TATN</td><td>+227 419 ₽</td><td>+227,4</td><td>202</td><td>+169 694 ₽</td><td>+57 725 ₽</td><td>-44,2%</td></tr>
+<tr><td>SIBN</td><td>+220 293 ₽</td><td>+220,3</td><td>217</td><td>+170 014 ₽</td><td>+50 279 ₽</td><td>-21,0%</td></tr>
+<tr><td>VKCO</td><td>+215 836 ₽</td><td>+215,8</td><td>49</td><td>−4 898 ₽</td><td>+220 733 ₽</td><td>-19,2%</td></tr>
+<tr><td>MOEX</td><td>+205 864 ₽</td><td>+205,9</td><td>185</td><td>+118 344 ₽</td><td>+87 520 ₽</td><td>-31,2%</td></tr>
+<tr><td>NVTK</td><td>+199 677 ₽</td><td>+199,7</td><td>192</td><td>+125 748 ₽</td><td>+73 928 ₽</td><td>-39,9%</td></tr>
+<tr><td>GAZP</td><td>+198 875 ₽</td><td>+198,9</td><td>207</td><td>+97 746 ₽</td><td>+101 129 ₽</td><td>-43,8%</td></tr>
+<tr><td>LKOH</td><td>+196 447 ₽</td><td>+196,4</td><td>213</td><td>+134 578 ₽</td><td>+61 869 ₽</td><td>-43,2%</td></tr>
+<tr><td>MRKC</td><td>+193 585 ₽</td><td>+193,6</td><td>211</td><td>+171 124 ₽</td><td>+22 460 ₽</td><td>-41,6%</td></tr>
+<tr><td>SBERP</td><td>+185 794 ₽</td><td>+185,8</td><td>209</td><td>+166 700 ₽</td><td>+19 095 ₽</td><td>-15,7%</td></tr>
+<tr><td>FEES</td><td>+185 363 ₽</td><td>+185,4</td><td>173</td><td>−14 750 ₽</td><td>+200 113 ₽</td><td>-33,9%</td></tr>
+<tr><td>SNGS</td><td>+182 521 ₽</td><td>+182,5</td><td>180</td><td>+36 591 ₽</td><td>+145 930 ₽</td><td>-27,7%</td></tr>
+<tr><td>VTBR</td><td>+178 428 ₽</td><td>+178,4</td><td>196</td><td>+28 526 ₽</td><td>+149 902 ₽</td><td>-52,0%</td></tr>
+<tr><td>POLY</td><td>+174 389 ₽</td><td>+174,4</td><td>162</td><td>+51 718 ₽</td><td>+122 671 ₽</td><td>-59,4%</td></tr>
+<tr><td>IMOEX</td><td>+167 292 ₽</td><td>+167,3</td><td>228</td><td>+75 281 ₽</td><td>+92 011 ₽</td><td>-23,0%</td></tr>
+<tr><td>RTKMP</td><td>+158 741 ₽</td><td>+158,7</td><td>119</td><td>+70 067 ₽</td><td>+88 674 ₽</td><td>-14,6%</td></tr>
+<tr><td>PLZL</td><td>+146 690 ₽</td><td>+146,7</td><td>219</td><td>+163 030 ₽</td><td>−16 340 ₽</td><td>-34,8%</td></tr>
+<tr><td>KMAZ</td><td>+141 209 ₽</td><td>+141,2</td><td>185</td><td>+28 298 ₽</td><td>+112 911 ₽</td><td>-67,8%</td></tr>
+<tr><td>MTSS</td><td>+111 245 ₽</td><td>+111,2</td><td>163</td><td>+77 845 ₽</td><td>+33 400 ₽</td><td>-44,5%</td></tr>
+<tr><td>IRAO</td><td>+108 120 ₽</td><td>+108,1</td><td>158</td><td>+27 058 ₽</td><td>+81 062 ₽</td><td>-47,6%</td></tr>
+<tr><td>GMKN</td><td>+106 924 ₽</td><td>+106,9</td><td>202</td><td>+111 120 ₽</td><td>−4 197 ₽</td><td>-51,2%</td></tr>
+<tr><td>HYDR</td><td>+96 572 ₽</td><td>+96,6</td><td>164</td><td>+825 ₽</td><td>+95 747 ₽</td><td>-51,0%</td></tr>
+<tr><td>POSI</td><td>+92 199 ₽</td><td>+92,2</td><td>60</td><td>−6 916 ₽</td><td>+99 115 ₽</td><td>-36,1%</td></tr>
+<tr><td>TRNFP</td><td>+75 085 ₽</td><td>+75,1</td><td>191</td><td>+20 994 ₽</td><td>+54 091 ₽</td><td>-42,2%</td></tr>
+<tr><td>SNGSP</td><td>+62 498 ₽</td><td>+62,5</td><td>177</td><td>+84 709 ₽</td><td>−22 211 ₽</td><td>-49,3%</td></tr>
+<tr><td>ROSN</td><td>+45 693 ₽</td><td>+45,7</td><td>202</td><td>+46 738 ₽</td><td>−1 045 ₽</td><td>-46,0%</td></tr>
+<tr><td>CBOM</td><td>+34 753 ₽</td><td>+34,8</td><td>156</td><td>+51 293 ₽</td><td>−16 539 ₽</td><td>-41,5%</td></tr>
 </table>
-<p><em>Пакет полностью пересобирается: <code>python presentation_short_build.py</code> (прогоны кэшируются в <code>tables/_cache</code>). Исходник данных — <code>data/candles_ru_daily/</code>.</em></p>
+<p><em>Пакет полностью пересобирается: <code>python report_build.py</code> (прогоны кэшируются в <code>tables/_cache</code>). Исходник данных — <code>data/candles_ru_daily/</code>.</em></p>
 
 </body>
 </html>

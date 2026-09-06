@@ -1,0 +1,165 @@
+Portfolio Trading System - Implementation Requirements
+=====================================================
+
+1. OVERVIEW
+-----------
+A .NET application that provides trading signals to a Telegram channel.
+The system consumes real-time 1-minute candles from the T-Bank (Tinkoff) API
+and generates trading signals based on the validated roc_momentum strategy
+(see parent folder's TECHNICAL.md for strategy parameters and constraints).
+
+2. DATA SOURCE
+--------------
+- Real-time 1-minute candle feed from T-Bank (Tinkoff Invest) API via the
+  official C# SDK: Tinkoff.InvestApi (NuGet), see
+  https://opensource.tbank.ru/invest/invest-csharp (repository:
+  Tinkoff/invest-api-csharp-sdk).
+- The SDK is a gRPC client; use its streaming endpoints for real-time
+  1-minute candles (candles stream / market data service).
+- Candles are used to compute intraday signals and aggregate to daily bars
+  for the ROC momentum strategy.
+- Historical daily bars (warm-up history) are taken from the same T-Bank API
+  via GetCandles at CANDLE_INTERVAL_DAY (allowed range: 1 day .. 6 years,
+  max 2400 candles per request). Paginate year-by-year if needed.
+- Use each instrument's first_1day_candle_date to determine actual history
+  start (varies per instrument).
+- Connection must handle reconnection and API rate limits gracefully.
+- Access token and sandbox/live mode configurable via appsettings.
+
+3. DATABASE (PostgreSQL)
+------------------------
+- Store the list of trading instruments (stocks) in PostgreSQL.
+- Each stock record must include:
+  * Ticker symbol
+  * ISIN / FIGI identifier
+  * Trading status (active/inactive)
+  * Processing status (running/paused)
+  * Metadata (name, lot size, etc.)
+- Each stock may have a corresponding futures contract for shorting:
+  * Future ticker / FIGI (nullable)
+  * If null, the stock itself is used for short execution.
+- Initial seed: the database is pre-populated with all 39 tradable stocks
+  (ORIG U NEW minus the IMOEX index, see universe.py), each
+  initially in **inactive** trading status and **paused** processing status:
+  * ORIG: AFLT, ALRS, CBOM, CHMF, FEES, GAZP, GMKN, IRAO, LKOH,
+          MGNT, MTSS, NLMK, NVTK, PLZL, POLY, POSI, ROSN, RUAL, SBER,
+          SBERP, SNGSP, TATN, TRNFP, VTBR
+  * NEW:  MOEX, SIBN, MAGN, PIKK, SMLT, MRKC, VKCO, HYDR, TGKA, SNGS,
+          OGKB, KMAZ, MVID, RTKMP, BSPB
+- IMOEX index is NOT tracked: it is used only in the report as a benchmark
+  (comparison vs the MOEX index), not as a tradeable instrument.
+- Store historical signal/trade logs for auditing.
+
+4. TRADING SIGNALS
+------------------
+- Signal generation implements the validated roc_momentum strategy exactly as
+  defined in the research package (see section 8. STRATEGY REFERENCE). The
+  algorithm itself is NOT re-specified here; the research is the single source
+  of truth.
+- Signals are published to a Telegram channel.
+- Signal payload follows the research-defined entry/exit logic (ticker,
+  direction, entry price, stop-loss, take-profit, timestamp).
+- Only one open position per name at a time.
+- An instrument must be in active trading status AND running processing
+  status to be included in trading/analyzing logic.
+
+5. TELEGRAM INTEGRATION
+------------------------
+- Publish trading signals to a configured Telegram channel.
+- Support configurable bot token and channel/chat ID.
+
+  a) Position Opening Message
+     - Ticker symbol
+     - Direction (LONG / SHORT)
+     - Entry price
+     - Stop-loss level
+     - Take-profit level
+     - Timestamp
+
+  b) Position Closing Message
+     - Ticker symbol
+     - Direction (LONG / SHORT)
+     - Entry price
+     - Exit price
+     - PnL in percentage (e.g., +2.35% or -1.12%)
+     - Reason for exit (stop-loss / take-profit / signal reversal)
+     - Timestamp
+
+  c) Formatting
+     - Clear, readable format (emoji optional, but consider readability).
+     - Distinguish opening vs closing messages visually.
+
+6. ADMIN PANEL (Web UI)
+------------------------
+- Accessible from browser via HTTP.
+- Basic Authentication required for all admin endpoints.
+- Features:
+
+  a) Global Controls
+     - Stop all signalling (pause entire system).
+     - Resume all signalling.
+     - Reset state: reinitialize all trading modules, clear caches,
+       reload instruments from database.
+
+  b) Instrument Management (CRUD)
+     - Add new trading stock (with optional future mapping).
+     - Update existing stock (ticker, future, status).
+     - Remove stock from the system.
+     - View list of all instruments with their status.
+
+  c) Per-Instrument Controls
+     - Stop processing for individual stock (pause).
+     - Resume processing for individual stock.
+     - View current state/signals for individual stock.
+
+  d) Algo Runtime Metrics
+     - View per-stock algo runtime metrics, e.g.:
+       * Last candle received (timestamp, price)
+       * History warm-up status / latest close
+       * Current computed indicator values (ROC, ATR)
+       * Current position state (flat / long / short, since when)
+       * Algo execution status (running, paused, last run time, errors)
+     - Metrics should refresh live in the panel.
+
+7. ARCHITECTURE NOTES
+---------------------
+- Solution should follow Clean Architecture or similar layered approach:
+  * Domain / Core (strategy logic, models)
+  * Application (use cases, signal generation)
+  * Infrastructure (T-Bank API, Telegram, PostgreSQL)
+  * Presentation (Admin panel, API)
+- Use dependency injection throughout.
+- External SDKs:
+  * T-Bank: Tinkoff.InvestApi (official C# gRPC SDK for T-Invest API)
+    https://opensource.tbank.ru/invest/invest-csharp
+  * Telegram: Telegram.Bot (or equivalent)
+  * PostgreSQL: Npgsql (or EF Core with Npgsql provider)
+- Configuration files:
+  * appsettings.json          - shared/base settings (strategy params, defaults)
+  * appsettings.Development.json - dev-specific overrides (local DB, test tokens)
+  * appsettings.Production.json  - prod-specific overrides (real DB, live tokens)
+- Structured logging (Serilog or similar).
+
+8. STRATEGY REFERENCE (single source of truth)
+-----------------------------------------------
+- The trading algorithm, its parameters and all mechanics are defined and
+  validated in the research package. Do NOT duplicate or re-derive them here;
+  reference the research instead.
+- Key research assets (relative to PortfolioTradingSystem/):
+  * ../TECHNICAL.md      - engineering/algorithm spec (parameters, mechanics,
+                           integration checks, invariants listed there)
+  * ../README.md         - strategy overview and validated results
+  * ../strategy_research.py - reference implementation of the backtest engine
+  * ../universe.py - 40-name research universe (ORIG U NEW);
+    the app seeds the 39 tradable stocks, excluding the IMOEX benchmark
+  * ../report/report.md  - results report
+- Invariants the implementation must honor (all defined in ../TECHNICAL.md):
+  * No look-ahead: ATR for entry/stop taken from the previous bar.
+  * At most one open position per name.
+  * If both SL and TP hit in the same bar, assume SL (conservative).
+  * Short positions executed via stock futures (no margin financing).
+  * ENRU/RSTI delisted; YDEX is NOT delisted but excluded from the research
+    due to a price-series restart (shares of the new МКПАО "Яндекс" trade
+    under YDEX only since 2024-07-24 - truncation bias).
+- IMOEX data is NOT used for signal issuing (verified: strategy_research.py
+  has no IMOEX references); IMOEX serves only as a report benchmark.
