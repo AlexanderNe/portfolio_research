@@ -19,7 +19,7 @@ public static class AdminEndpoints
 
         app.MapGet("/", async (IInstrumentRepository instruments, IEngineSupervisor supervisor, IMetricsStore metrics, CancellationToken ct) =>
         {
-var all = await instruments.GetAllAsync(ct).ConfigureAwait(false);
+            var all = await instruments.GetAllAsync(ct).ConfigureAwait(false);
             var running = all.Count(i => i.ProcessingStatus == ProcessingStatus.Running);
             var metricsList = metrics.GetAll();
             return Results.Text(
@@ -137,6 +137,34 @@ var all = await instruments.GetAllAsync(ct).ConfigureAwait(false);
 
         app.MapGet($"{rootPrefix}/signals/tickers", async (ISignalLogRepository signals, CancellationToken ct) =>
             Results.Json(await signals.GetTickersAsync(ct).ConfigureAwait(false)));
+
+        app.MapPost($"{rootPrefix}/signals/{{id:guid}}/resend", async (Guid id, ISignalLogRepository signals, ITelegramGateway telegram, TelegramMessageFormatter formatter, CancellationToken ct) =>
+        {
+            var entry = await signals.GetByIdAsync(id, ct).ConfigureAwait(false);
+            if (entry is null)
+            {
+                logger.LogWarning("Signal resend failed: {SignalId} not found", id);
+                return Results.NotFound();
+            }
+
+            await telegram.SendMessageAsync(formatter.Duplicate(entry), ct).ConfigureAwait(false);
+            logger.LogInformation("Resent signal {SignalId} ({Ticker} {Type}) to Telegram", entry.Id, entry.Ticker, entry.Type);
+            return Results.Json(entry);
+        });
+
+        app.MapPost($"{rootPrefix}/instruments/{{id:guid}}/resend-active", async (Guid id, ISignalLogRepository signals, ITelegramGateway telegram, TelegramMessageFormatter formatter, CancellationToken ct) =>
+        {
+            var entry = await signals.GetLatestOpenedAsync(id, ct).ConfigureAwait(false);
+            if (entry is null)
+            {
+                logger.LogWarning("Active signal resend failed: no PositionOpened for {InstrumentId}", id);
+                return Results.NotFound();
+            }
+
+            await telegram.SendMessageAsync(formatter.Duplicate(entry), ct).ConfigureAwait(false);
+            logger.LogInformation("Resent active signal {SignalId} ({Ticker}) to Telegram", entry.Id, entry.Ticker);
+            return Results.Json(entry);
+        });
 
         app.MapPost($"{rootPrefix}/instruments", async (InstrumentUpsertDto dto, IInstrumentRepository instruments, IEngineSupervisor supervisor, CancellationToken ct) =>
         {

@@ -18,10 +18,14 @@ public interface IMarketDataGateway
 public interface IHistoricDailyBarsProvider
 {
     /// <summary>Returns up to <paramref name="maxBars"/> completed daily bars, ascending, excluding the current day.</summary>
-    Task<IReadOnlyList<Candle>> GetDailyBarsAsync(string figi, int maxBars, CancellationToken ct);
+    Task<IReadOnlyList<Candle>> GetDailyBarsAsync(string instrumentId, int maxBars, CancellationToken ct);
 }
 
-/// <summary>Publishes trading signals to the configured Telegram channel.</summary>
+/// <summary>
+/// Publishes trading signals to the configured Telegram channel. Send failures
+/// must be swallowed so the caller never loses signal/trade records because a
+/// notification could not be delivered.
+/// </summary>
 public interface ITelegramGateway
 {
     Task SendMessageAsync(string text, CancellationToken ct);

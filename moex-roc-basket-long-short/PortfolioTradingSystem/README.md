@@ -126,6 +126,8 @@ entries.
 | POST | `/api/instruments/resolve-all` | Resolve all instruments lacking UID |
 | POST | `/api/instruments/{id}/pause` | Pause engine |
 | POST | `/api/instruments/{id}/resume` | Resume engine |
+| POST | `/api/signals/{id}/resend` | Re-post a logged signal to Telegram (prefixed "duplicate, NOT a new signal") |
+| POST | `/api/instruments/{id}/resend-active` | Re-post the active (open) position signal to Telegram as a duplicate |
 | POST | `/api/control/stop` | Global stop (all instruments → Paused) |
 | POST | `/api/control/resume` | Global resume (all instruments → Running) |
 | POST | `/api/control/reset` | Clear metrics, restart all engines |
@@ -155,6 +157,8 @@ Logs include warm-up summary (last bar, ROC, signal, ATR), every open/close sign
 ## Development
 
 - Build: `dotnet build PortfolioTradingSystem.slnx` (must be 0 errors / 0 warnings).
-- No test project yet; verification is compile-time + runtime logs.
+- Unit tests: `PortfolioTradingSystem.Tests` (xUnit) covers `MomentumEngineState`
+  algorithm math; run `dotnet test PortfolioTradingSystem.Tests`. It references only
+  the Domain project — no app state touched.
 - C# conventions: file-scoped namespaces, records for domain events, no comments
   beyond XML docs for public API.

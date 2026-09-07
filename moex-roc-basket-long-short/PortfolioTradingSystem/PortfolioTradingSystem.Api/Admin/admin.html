@@ -14,6 +14,7 @@
   header {
     background: #1c2431; border-bottom: 1px solid #2c3648;
     padding: 12px 20px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    position: relative;
   }
   header h1 { margin: 0; font-size: 17px; font-weight: 600; }
   .statusline { display: flex; gap: 12px; margin-left: auto; align-items: center; flex-wrap: wrap; }
@@ -75,10 +76,13 @@
   }
   .signals { margin-top: 10px; }
   .signals table th { font-size: 11px; }
-  .errorbox { display: none; background: #4a1d1d; border: 1px solid #7a3030; color: #ffd2d2; border-radius: 6px; padding: 10px 14px; margin-bottom: 14px; white-space: pre-line; }
+  .errorbox { display: none; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 30; max-width: 55%; background: #4a1d1d; border: 1px solid #7a3030; color: #ffd2d2; border-radius: 6px; padding: 6px 12px; white-space: pre-line; text-align: center; font-size: 12px; }
   .toast { position: fixed; bottom: 18px; right: 18px; background: #232f42; border: 1px solid #3d4a5f;
            padding: 10px 16px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity .3s; z-index: 50; }
-  @media (max-width: 900px) { .statusline { margin-left: 0; } }
+  @media (max-width: 900px) {
+    .statusline { margin-left: 0; }
+    .errorbox { position: static; transform: none; max-width: 100%; font-size: 13px; text-align: left; }
+  }
 </style>
 </head>
 <body>
@@ -93,10 +97,9 @@
     <button class="btn primary" onclick="control('resume', this)">Resume all</button>
     <button class="btn" onclick="resolveAll(this)">Resolve all</button>
   </div>
+  <div class="errorbox" id="errorBox"></div>
 </header>
 <main>
-  <div class="errorbox" id="errorBox"></div>
-
   <nav class="tabs">
     <button class="tab active" data-view="instruments" onclick="showView('instruments')">Instruments</button>
     <button class="tab" data-view="signals" onclick="showView('signals')">Signals</button>
@@ -153,11 +156,11 @@
           <thead>
             <tr>
               <th>Time</th><th>Ticker</th><th>Type</th><th>Direction</th><th>Price</th>
-              <th>SL</th><th>TP</th><th>Exit</th><th>Exit reason</th><th>PnL</th>
+              <th>SL</th><th>TP</th><th>Exit</th><th>Exit reason</th><th>PnL</th><th>Actions</th>
             </tr>
           </thead>
           <tbody id="sigRows">
-            <tr><td colspan="10" class="empty">Loading…</td></tr>
+            <tr><td colspan="11" class="empty">Loading…</td></tr>
           </tbody>
         </table>
       </div>
@@ -277,6 +280,7 @@ function renderRows() {
                        : m.positionState === "short" ? badge("SHORT", "red")
                        : badge("flat", "gray")) : badge("—", "gray");
     const posSince = m && m.positionSince ? " since " + fmtTime(m.positionSince) : "";
+    const activePos = m && (m.positionState === "long" || m.positionState === "short");
     const hasErr = m && m.lastError ? ' title="' + esc(m.lastError) + '"' : "";
     const future = instr.futureTicker ? instr.futureTicker + (instr.futureFigi ? " (" + instr.futureFigi + ")" : "") : "";
     const isOpen = expandedTicker === instr.ticker;
@@ -289,7 +293,8 @@ function renderRows() {
       '<td' + hasErr + '>' + mBadge + (m && m.warmupDone ? ' · warm' : '') + '</td>' +
       '<td class="mono">' + lastCandle + '</td>' +
       '<td class="mono">' + rocAtr + '</td>' +
-      '<td>' + posState + posSince + (m && m.pendingSignal !== 0 && m.pendingSignal ? " · signal " + (m.pendingSignal > 0 ? "L" : "S") : "") + '</td>' +
+      '<td>' + posState + posSince + (m && m.pendingSignal !== 0 && m.pendingSignal ? " · signal " + (m.pendingSignal > 0 ? "L" : "S") : "") +
+        (activePos ? ' <button class="btn" title="Repost the active signal to Telegram as a duplicate" onclick="resendActive(\'' + instr.id + '\')">Resend signal to Telegram</button>' : "") + '</td>' +
       '<td class="row-actions">' +
         '<button class="btn" onclick="actions.expand(\'' + instr.id + '\')">Detail</button>' +
         '<button class="btn" onclick="window.open(\'/chart?id=' + instr.id + '\', \'_blank\')">Chart</button>' +
@@ -551,6 +556,20 @@ function clearTickerFilter() {
   loadSignalsPage();
 }
 
+async function resendSignal(id) {
+  try {
+    await api("/api/signals/" + id + "/resend", { method: "POST" });
+    toast("Signal resent to Telegram with a duplicate remark");
+  } catch (err) { showError("Resend failed: " + err.message); }
+}
+
+async function resendActive(id) {
+  try {
+    await api("/api/instruments/" + id + "/resend-active", { method: "POST" });
+    toast("Active signal resent to Telegram with a duplicate remark");
+  } catch (err) { showError("Resend active failed: " + err.message); }
+}
+
 function signalTypeBadge(t) {
   if (t === "PositionOpened") return badge("OPEN", "green");
   if (t === "PositionClosed") return badge("CLOSE", "blue");
@@ -564,7 +583,7 @@ function humanizeEnum(s) {
 async function loadSignalsPage() {
   const box = document.getElementById("sigRows");
   if (currentView !== "signals") return;
-  if (!sigState.hasRows) box.innerHTML = '<tr><td colspan="10" class="empty">Loading…</td></tr>';
+  if (!sigState.hasRows) box.innerHTML = '<tr><td colspan="11" class="empty">Loading…</td></tr>';
   let params = "page=" + sigState.page + "&pageSize=" + sigState.pageSize;
   if (sigState.ticker) params += "&ticker=" + encodeURIComponent(sigState.ticker);
   try {
@@ -574,7 +593,7 @@ async function loadSignalsPage() {
     if (sigState.page > sigState.totalPages) {
       sigState.page = sigState.totalPages;
       sigState.hasRows = false;
-      box.innerHTML = '<tr><td colspan="10" class="empty">Loading…</td></tr>';
+      box.innerHTML = '<tr><td colspan="11" class="empty">Loading…</td></tr>';
       loadSignalsPage();
       return;
     }
@@ -590,7 +609,7 @@ function renderSignalRows(items) {
   const box = document.getElementById("sigRows");
   sigState.hasRows = items.length > 0;
   if (!items.length) {
-    box.innerHTML = '<tr><td colspan="10" class="empty">No signals' +
+    box.innerHTML = '<tr><td colspan="11" class="empty">No signals' +
       (sigState.ticker ? " for " + esc(sigState.ticker) : "") + ".</td></tr>";
   } else {
     box.innerHTML = items.map(s => '<tr>' +
@@ -604,6 +623,7 @@ function renderSignalRows(items) {
       '<td class="mono num">' + fmtNum(s.exitPrice, 4) + '</td>' +
       '<td>' + (s.exitReason ? esc(humanizeEnum(s.exitReason)) : "—") + '</td>' +
       '<td class="mono num">' + fmtPct(s.pnlPercent) + '</td>' +
+      '<td><button class="btn" title="Repost this signal to Telegram as a duplicate" onclick="resendSignal(\'' + s.id + '\')">Resend signal to Telegram</button></td>' +
     '</tr>').join("");
   }
   document.getElementById("sigTotal").textContent = sigState.total ? sigState.total + " entries" : "";

@@ -57,6 +57,11 @@ public interface ISignalLogRepository
 {
     Task AddAsync(SignalLogEntry entry, CancellationToken ct);
 
+    Task<SignalLogEntry?> GetByIdAsync(Guid id, CancellationToken ct);
+
+    /// <summary>Most recent opened-position signal for the instrument (used to resend the active signal).</summary>
+    Task<SignalLogEntry?> GetLatestOpenedAsync(Guid instrumentId, CancellationToken ct);
+
     Task<IReadOnlyList<SignalLogEntry>> GetByInstrumentAsync(Guid instrumentId, int limit, CancellationToken ct);
 
     /// <summary>Page of signals filtered by ticker (exact match, case-insensitive), newest first.</summary>

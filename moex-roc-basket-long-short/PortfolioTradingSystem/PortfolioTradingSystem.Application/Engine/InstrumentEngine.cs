@@ -83,11 +83,8 @@ public sealed class InstrumentEngine : IAsyncDisposable
 
     public bool IsRunning => _runTask is not null && !_runTask.IsCompleted;
 
-    public EngineStateSnapshot? GetSnapshot(decimal? lastPrice)
-    {
-        var snapshot = _state.GetSnapshot(lastPrice ?? _state.Position?.EntryPrice ?? 0m);
-        return _state.Position is null ? snapshot : snapshot;
-    }
+    public EngineStateSnapshot? GetSnapshot(decimal? lastPrice) =>
+        _state.GetSnapshot(lastPrice ?? _state.Position?.EntryPrice ?? 0m);
 
     /// <summary>Completed daily bars held in memory (warm-up history, finalized sessions), ascending.</summary>
     public IReadOnlyList<Candle> GetDailyBars()
@@ -272,15 +269,27 @@ public sealed class InstrumentEngine : IAsyncDisposable
         });
 
         decimal realized = await _tradeLogs.SumRealizedPnlAsync(InstrumentId, ct).ConfigureAwait(false);
-        _state.SetCash(_strategyOptions.InitialCapital + realized);
-
         var open = await _positions.GetOpenAsync(InstrumentId, ct).ConfigureAwait(false);
         if (open is not null)
         {
             _state.RestorePosition(open);
+            // Free cash at restart must equal the simulator's cash right after the open
+            // position was entered: initial capital + realized PnL of closed trades,
+            // plus/minus the committed entry cost (long: -notional, short: +margin
+            // credit, file the research cash mechanics) and the open-side commission.
+            // Without this the restored cash (and therefore equity and risk% sizing)
+            // stays overstated by the position's entry value.
+            decimal entryCost =
+                (int)open.Direction * open.Units * open.EntryPrice * _strategyOptions.PointRub
+                + open.OpenCommission;
+            _state.SetCash(_strategyOptions.InitialCapital + realized - entryCost);
             _logger.LogInformation(
                 "Restored {Ticker} position: {Direction} {Units} @ {Entry} (open {Open:O})",
                 Ticker, open.Direction, open.Units, open.EntryPrice, open.EntryTime);
+        }
+        else
+        {
+            _state.SetCash(_strategyOptions.InitialCapital + realized);
         }
 
         _metrics.Update(InstrumentId, m =>

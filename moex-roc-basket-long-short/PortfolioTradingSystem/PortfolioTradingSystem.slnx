@@ -3,4 +3,5 @@
   <Project Path="PortfolioTradingSystem.Application/PortfolioTradingSystem.Application.csproj" />
   <Project Path="PortfolioTradingSystem.Domain/PortfolioTradingSystem.Domain.csproj" />
   <Project Path="PortfolioTradingSystem.Infrastructure/PortfolioTradingSystem.Infrastructure.csproj" />
+  <Project Path="PortfolioTradingSystem.Tests/PortfolioTradingSystem.Tests.csproj" />
 </Solution>

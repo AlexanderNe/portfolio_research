@@ -153,8 +153,9 @@ function computeScale() {
 }
 
 function candleIndexFor(time) {
-  if (scale.n === 0) return 0;
+  if (!time || scale.n === 0) return 0;
   const t = new Date(time).getTime();
+  if (isNaN(t)) return 0;
   if (new Date(scale.cs[0].time).getTime() >= t) return 0;
   if (new Date(scale.cs[scale.n - 1].time).getTime() <= t) return scale.n - 1;
   let lo = 0, hi = scale.n - 1;
@@ -414,6 +415,12 @@ window.addEventListener("mousemove", e => {
 
 window.addEventListener("mouseup", e => {
   if (e.button === 1 && panning) {
+    panning = null;
+    cv.style.cursor = "";
+  }
+});
+window.addEventListener("blur", () => {
+  if (panning) {
     panning = null;
     cv.style.cursor = "";
   }

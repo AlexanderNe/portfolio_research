@@ -136,12 +136,22 @@ public sealed class TinkoffMarketDataMultiplexer : IMarketDataGateway, IAsyncDis
                 }
             }
 
+            // Membership changed while we were disconnected from the old stream:
+            // reopen instead of opening with a stale subscription set.
+            if (Volatile.Read(ref _restartRequested))
+            {
+                Volatile.Write(ref _restartRequested, false);
+                await Task.Delay(150, ct).ConfigureAwait(false);
+                continue;
+            }
+
             var request = BuildRequest(ids);
             _logger.LogDebug("Opening shared market data stream for {Count} instruments", ids.Count);
             AsyncServerStreamingCall<MarketDataResponse> call = _connection.MarketDataStream.MarketDataServerSideStream(
                 request,
                 new CallOptions(headers: _connection.Metadata, cancellationToken: ct));
 
+            bool reopenedForChange = false;
             try
             {
                 await foreach (var message in call.ResponseStream.ReadAllAsync(ct).ConfigureAwait(false))
@@ -149,39 +159,42 @@ public sealed class TinkoffMarketDataMultiplexer : IMarketDataGateway, IAsyncDis
                     if (Volatile.Read(ref _restartRequested))
                     {
                         Volatile.Write(ref _restartRequested, false);
+                        reopenedForChange = true;
                         _logger.LogDebug("Subscription set changed; reopening shared stream");
                         break;
                     }
 
                     if (message.Candle is not null)
                     {
-                        string uid = message.Candle.InstrumentUid;
-                        if (string.IsNullOrEmpty(uid))
-                        {
-                            continue;
-                        }
-
-                        Candle candle = TinkoffMappers.ToCandle(message.Candle);
                         Channel<Candle>? target;
                         lock (_gate)
                         {
-                            _subscriptions.TryGetValue(uid, out target);
+                            // Responses identify candles by InstrumentUid; fall back to FIGI
+                            // for instruments subscribed before a resolution set a UID.
+                            _subscriptions.TryGetValue(message.Candle.InstrumentUid, out target);
+                            if (target is null && !string.IsNullOrEmpty(message.Candle.Figi))
+                            {
+                                _subscriptions.TryGetValue(message.Candle.Figi, out target);
+                            }
                         }
 
-                        target?.Writer.TryWrite(candle);
+                        target?.Writer.TryWrite(TinkoffMappers.ToCandle(message.Candle));
                     }
                 }
 
-                if (!Volatile.Read(ref _restartRequested))
+                if (!ct.IsCancellationRequested)
                 {
-                    _logger.LogWarning("Shared market data stream ended; reconnecting");
-                    delay = _reconnectStart;
-                    await Task.Delay(delay, ct).ConfigureAwait(false);
-                }
-                else
-                {
-                    Volatile.Write(ref _restartRequested, false);
-                    await Task.Delay(150, ct).ConfigureAwait(false);
+                    if (reopenedForChange)
+                    {
+                        await Task.Delay(150, ct).ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        // Genuine end of stream (server-side EOF) with an unchanged set.
+                        _logger.LogWarning("Shared market data stream ended; reconnecting");
+                        delay = _reconnectStart;
+                        await Task.Delay(delay, ct).ConfigureAwait(false);
+                    }
                 }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)

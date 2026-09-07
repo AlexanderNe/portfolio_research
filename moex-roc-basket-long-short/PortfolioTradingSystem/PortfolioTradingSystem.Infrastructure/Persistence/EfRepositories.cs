@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using PortfolioTradingSystem.Application.Ports;
+using PortfolioTradingSystem.Domain.Enums;
 using PortfolioTradingSystem.Domain.Models;
 
 namespace PortfolioTradingSystem.Infrastructure.Persistence;
@@ -186,6 +187,21 @@ public sealed class EfSignalLogRepository : ISignalLogRepository
         await using var db = await _factory.CreateDbContextAsync(ct).ConfigureAwait(false);
         await db.SignalLogs.AddAsync(entry, ct).ConfigureAwait(false);
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
+    }
+
+    public async Task<SignalLogEntry?> GetByIdAsync(Guid id, CancellationToken ct)
+    {
+        await using var db = await _factory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        return await db.SignalLogs.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, ct).ConfigureAwait(false);
+    }
+
+    public async Task<SignalLogEntry?> GetLatestOpenedAsync(Guid instrumentId, CancellationToken ct)
+    {
+        await using var db = await _factory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        return await db.SignalLogs.AsNoTracking()
+            .Where(x => x.InstrumentId == instrumentId && x.Type == SignalType.PositionOpened)
+            .OrderByDescending(x => x.Timestamp)
+            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
     }
 
     public async Task<IReadOnlyList<SignalLogEntry>> GetByInstrumentAsync(Guid instrumentId, int limit, CancellationToken ct)

@@ -11,8 +11,9 @@ agent, not for end users (see `README.md` for user/developer docs).
 - **Never modify the Python research** (`../strategy_research.py`, `../report`,
   `../data/`) — it is the single source of truth for the strategy.
 - Never commit, amend, or push unless explicitly asked.
-- No unit tests exist; verification is build + reasoning. Do not invent a test
-  harness unless asked.
+- `PortfolioTradingSystem.Tests` (xUnit) covers `MomentumEngineState` algorithm
+  math; run `dotnet test PortfolioTradingSystem.Tests`. It references only the
+  Domain project — no app state touched.
 - Do not log credentials/tokens/secret values. Log only presence flags
   (e.g. `tokenConfigured`).
 
@@ -57,10 +58,20 @@ agent, not for end users (see `README.md` for user/developer docs).
 - Intraday SL/TP checked only for positions that existed BEFORE the candle.
 - Sizing: `units = floor(risk%·cash/(SlAtr·ATR))`, cap `floor(leverage·cash/notional)`,
   `SL=entry∓SlAtr·ATR`, `TP=entry±TpAtr·ATR`, commission both sides, SL before TP.
-- Restart recovery: cash = `InitialCapital` + sum(realized PnL); open position
-  restored from `OpenPositions`. Pause/resume within the same session resets
+- Restart recovery: cash = `InitialCapital` + sum(realized PnL) with the open
+  position's committed entry cost applied (long: −notional − open commission,
+  short: +margin credit − open commission), matching the simulator's cash mechanics.
+  Open position restored from `OpenPositions`. Pause/resume within the same session resets
   `_enteredThisSession` — a flat same-day re-entry is possible after resume.
 - Stream reconnect: exponential backoff 2s → 60s.
+- Telegram: manual re-send is driven from the admin UI (never inline on the signal
+  itself). Signal-log rows → `POST /api/signals/{id}/resend`; the active position's
+  signal in the instruments table → `POST /api/instruments/{id}/resend-active`.
+  Both rebuild the message from the persisted `SignalLogEntry` and prefix it with
+  "⚠️ This is a duplicate of a previously sent signal — NOT a new signal."
+  (`TelegramMessageFormatter.Duplicate`).
+- Admin `admin.html` error box is absolutely centered in the header (never pushes
+  layout); falls back to in-flow on <900px.
 - Market data feeds: `TinkoffMarketDataMultiplexer` multiplexes ALL instruments over ONE
   `MarketDataServerSideStream` connection (T-Bank limit: 32 simultaneous quotes streams,
   300 subscriptions per stream, counter refreshes every 2 min). Error 80001 = "Limit of
