@@ -19,6 +19,10 @@
   header h1 { margin: 0; font-size: 17px; font-weight: 600; }
   .statusline { display: flex; gap: 12px; margin-left: auto; align-items: center; flex-wrap: wrap; }
   .statusline .pill { padding: 3px 10px; border-radius: 12px; font-size: 12px; border: 1px solid #333; }
+  .statusline a.pill { text-decoration: none; cursor: pointer; }
+  .statusline a.pill:hover { background: #223047; }
+  .statusline .pill.up { color: #7fd18a; border-color: #2e7d32; }
+  .statusline .pill.down { color: #e88f8f; border-color: #a83232; }
   .btn {
     background: #2b3748; cursor: pointer; border: 1px solid #3d4a5f; border-radius: 6px;
     color: #dbe2ec; padding: 6px 12px; font-size: 13px;
@@ -83,6 +87,35 @@
     .statusline { margin-left: 0; }
     .errorbox { position: static; transform: none; max-width: 100%; font-size: 13px; text-align: left; }
   }
+  @media (max-width: 720px) {
+    .card { padding: 10px; }
+    table, thead, tbody, tr, td { display: block; width: 100%; }
+    thead { display: none; }
+    tbody tr {
+      border: 1px solid #2c3648; border-radius: 8px; margin: 0 0 10px;
+      padding: 4px 12px; background: #161d29;
+    }
+    tr:hover td { background: transparent; }
+    td {
+      display: flex; justify-content: space-between; align-items: center; gap: 12px;
+      padding: 7px 0; border-bottom: 1px dashed #232c3b;
+    }
+    td:last-child { border-bottom: none; }
+    td[colspan] { display: block; padding: 0; border-bottom: none; }
+    td[colspan] .detail { border: none; }
+    td::before {
+      content: attr(data-label); color: #8fa3bf; font-size: 11px;
+      text-transform: uppercase; letter-spacing: .03em; font-weight: 600; flex-shrink: 0;
+    }
+    td:not([data-label])::before { content: none; }
+    td.row-actions { display: block; }
+    td.row-actions::before { content: attr(data-label); display: block; margin: 6px 0 2px; }
+    td.row-actions .btn { margin: 3px 3px 3px 0; }
+    .num { text-align: right; }
+    .empty { padding: 12px 0; }
+    .pager, .toolbar { align-items: stretch; }
+    .filterbox input[type="text"] { width: 100%; }
+  }
 </style>
 </head>
 <body>
@@ -92,6 +125,7 @@
     <span class="pill" id="globalState">state: -</span>
     <span class="pill" id="engineCount">engines: -</span>
     <span class="pill" id="counts">instruments: -</span>
+    <a class="pill" id="totalPnl" href="/equity" target="_blank" rel="noopener" title="Open total equity chart">PnL: -</a>
     <button class="btn danger" onclick="control('stop', this)">Stop all</button>
     <button class="btn ok" onclick="control('reset', this)" title="reinitialize modules, clear caches, reload instruments">Reset state</button>
     <button class="btn primary" onclick="control('resume', this)">Resume all</button>
@@ -216,6 +250,15 @@ function fmtPct(v) {
   if (v === null || v === undefined || isNaN(v)) return "—";
   return (v > 0 ? "+" : "") + Number(v).toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + "%";
 }
+function fmtMoney(v) {
+  if (v === null || v === undefined || isNaN(v)) return "—";
+  return (v > 0 ? "+" : "") + Number(v).toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+function pnlHtml(v, pct) {
+  if (v === null || v === undefined || isNaN(v)) return "";
+  const color = v >= 0 ? "#7fd18a" : "#e88f8f";
+  return '<span style="color:' + color + '">' + esc(fmtMoney(v)) + " RUB (" + esc(fmtPct(pct)) + ")</span>";
+}
 function badge(text, cls) { return '<span class="badge ' + (cls || "gray") + '">' + esc(text) + "</span>"; }
 function esc(s) {
   return String(s === null || s === undefined ? "" : s).replace(/[&<>"']/g, c => ({
@@ -251,9 +294,21 @@ async function refresh() {
     const stateMatch = text.match(/global state:\s*(\w+)/);
     const engMatch = text.match(/engines running:\s*(\d+)/);
     const cntMatch = text.match(/instruments:\s*(\d+) \(running: (\d+)\)/);
+    const pnlMatch = text.match(/total pnl:\s*([-+]?[0-9.]+)/);
+    const pnlPctMatch = text.match(/total pnl pct:\s*([-+]?[0-9.]+)/);
     document.getElementById("globalState").textContent = "state: " + (stateMatch ? stateMatch[1] : "?");
     document.getElementById("engineCount").textContent = "engines: " + (engMatch ? engMatch[1] : "?");
     document.getElementById("counts").textContent = "instruments: " + (cntMatch ? cntMatch[1] : "?") + " (running: " + (cntMatch ? cntMatch[2] : "?") + ")";
+    const pnlEl = document.getElementById("totalPnl");
+    if (pnlMatch) {
+      const pnlVal = parseFloat(pnlMatch[1]);
+      const pnlPct = pnlPctMatch ? parseFloat(pnlPctMatch[1]) : null;
+      pnlEl.textContent = "PnL: " + fmtMoney(pnlVal) + " RUB" + (pnlPct !== null ? " (" + fmtPct(pnlPct) + ")" : "");
+      pnlEl.classList.toggle("up", pnlVal >= 0);
+      pnlEl.classList.toggle("down", pnlVal < 0);
+    } else {
+      pnlEl.textContent = "PnL: ?";
+    }
 
     const views = await api("/api/instruments");
     instruments = views.map(v => Object.assign({}, v.instrument, { metrics: v.metrics || null }));
@@ -280,22 +335,21 @@ function renderRows() {
                        : m.positionState === "short" ? badge("SHORT", "red")
                        : badge("flat", "gray")) : badge("—", "gray");
     const posSince = m && m.positionSince ? " since " + fmtTime(m.positionSince) : "";
-    const activePos = m && (m.positionState === "long" || m.positionState === "short");
+    const posPnl = m ? pnlHtml(m.positionPnl, m.positionPnlPercent) : "";
     const hasErr = m && m.lastError ? ' title="' + esc(m.lastError) + '"' : "";
     const future = instr.futureTicker ? instr.futureTicker + (instr.futureFigi ? " (" + instr.futureFigi + ")" : "") : "";
     const isOpen = expandedTicker === instr.ticker;
     return '<tr>' +
-      '<td><b>' + esc(instr.ticker) + '</b></td>' +
-      '<td>' + esc(instr.name || "") + '</td>' +
-      '<td>' + stateBadges(instr) + '</td>' +
-      '<td class="mono">' + esc(instr.figi || "") + ' / ' + esc(instr.isin || "") + ' / ' + instr.lotSize +
+      '<td data-label="Ticker"><b>' + esc(instr.ticker) + '</b></td>' +
+      '<td data-label="Name">' + esc(instr.name || "") + '</td>' +
+      '<td data-label="Status">' + stateBadges(instr) + '</td>' +
+      '<td data-label="FIGI / ISIN / Lot / Future" class="mono">' + esc(instr.figi || "") + ' / ' + esc(instr.isin || "") + ' / ' + instr.lotSize +
         (future ? ' / ' + esc(future) : '') + '</td>' +
-      '<td' + hasErr + '>' + mBadge + (m && m.warmupDone ? ' · warm' : '') + '</td>' +
-      '<td class="mono">' + lastCandle + '</td>' +
-      '<td class="mono">' + rocAtr + '</td>' +
-      '<td>' + posState + posSince + (m && m.pendingSignal !== 0 && m.pendingSignal ? " · signal " + (m.pendingSignal > 0 ? "L" : "S") : "") +
-        (activePos ? ' <button class="btn" title="Repost the active signal to Telegram as a duplicate" onclick="resendActive(\'' + instr.id + '\')">Resend signal to Telegram</button>' : "") + '</td>' +
-      '<td class="row-actions">' +
+      '<td data-label="Engine"' + hasErr + '>' + mBadge + (m && m.warmupDone ? ' · warm' : '') + '</td>' +
+      '<td data-label="Last candle" class="mono">' + lastCandle + '</td>' +
+      '<td data-label="ROC / ATR" class="mono">' + rocAtr + '</td>' +
+      '<td data-label="Position">' + posState + posPnl + posSince + (m && m.pendingSignal !== 0 && m.pendingSignal ? " · signal " + (m.pendingSignal > 0 ? "L" : "S") : "") + '</td>' +
+      '<td data-label="Actions" class="row-actions">' +
         '<button class="btn" onclick="actions.expand(\'' + instr.id + '\')">Detail</button>' +
         '<button class="btn" onclick="window.open(\'/chart?id=' + instr.id + '\', \'_blank\')">Chart</button>' +
         '<button class="btn" onclick="actions.pause(\'' + instr.id + '\', this)">' + (instr.processingStatus === "Running" ? "Pause" : "Resume") + '</button>' +
@@ -317,6 +371,7 @@ function renderRows() {
         kv("ATR (" + "14)", fmtNum(m && m.atr, 4)) +
         kv("Cash", fmtNum(m && m.cash)) +
         kv("Equity", fmtNum(m && m.equity)) +
+        kv("Open PnL", m && m.positionPnl !== null && m.positionPnl !== undefined ? fmtMoney(m.positionPnl) + " RUB (" + fmtPct(m.positionPnlPercent) + ")" : "—") +
         kv("Position", m ? m.positionState : "—") +
         kv("Pending signal", m && m.pendingSignal ? (m.pendingSignal > 0 ? "LONG" : "SHORT") : "none") +
         kv("UID", instr.uid || "—") +
@@ -453,6 +508,7 @@ async function dangerousButton(btn, fn) {
 }
 
 async function control(action, btn) {
+  if (action === "stop" && !confirm("Stop ALL instrument engines? Running instruments will be paused.")) return;
   await dangerousButton(btn, async () => {
     await api("/api/control/" + action, { method: "POST" });
     toast("Command '" + action + "' sent");
@@ -496,15 +552,15 @@ async function loadSignals(id, ticker) {
       : '<table><thead><tr><th>Time</th><th>Type</th><th>Dir</th><th>Price</th>' +
         '<th>SL</th><th>TP</th><th>Exit</th><th>Exit reason</th><th>PnL</th></tr></thead><tbody>' +
         list.map(s => '<tr>' +
-          '<td class="mono">' + fmtTime(s.timestamp) + '</td>' +
-          '<td>' + esc(s.type) + '</td>' +
-          '<td>' + (s.direction === "Long" ? badge("LONG", "green") : s.direction === "Short" ? badge("SHORT", "red") : "—") + '</td>' +
-          '<td class="mono num">' + fmtNum(s.price, 4) + '</td>' +
-          '<td class="mono num">' + fmtNum(s.stopLoss, 4) + '</td>' +
-          '<td class="mono num">' + fmtNum(s.takeProfit, 4) + '</td>' +
-          '<td class="mono num">' + fmtNum(s.exitPrice, 4) + '</td>' +
-          '<td>' + (s.exitReason ? esc(s.exitReason) : "—") + '</td>' +
-          '<td class="mono num">' + fmtPct(s.pnlPercent) + '</td>' +
+          '<td data-label="Time" class="mono">' + fmtTime(s.timestamp) + '</td>' +
+          '<td data-label="Type">' + esc(s.type) + '</td>' +
+          '<td data-label="Dir">' + (s.direction === "Long" ? badge("LONG", "green") : s.direction === "Short" ? badge("SHORT", "red") : "—") + '</td>' +
+          '<td data-label="Price" class="mono num">' + fmtNum(s.price, 4) + '</td>' +
+          '<td data-label="SL" class="mono num">' + fmtNum(s.stopLoss, 4) + '</td>' +
+          '<td data-label="TP" class="mono num">' + fmtNum(s.takeProfit, 4) + '</td>' +
+          '<td data-label="Exit" class="mono num">' + fmtNum(s.exitPrice, 4) + '</td>' +
+          '<td data-label="Exit reason">' + (s.exitReason ? esc(s.exitReason) : "—") + '</td>' +
+          '<td data-label="PnL" class="mono num">' + fmtPct(s.pnlPercent) + '</td>' +
         '</tr>').join("") + '</tbody></table>';
     const b2 = document.getElementById("sig-" + ticker);
     if (b2) b2.innerHTML = signalsHtml[ticker];
@@ -563,13 +619,6 @@ async function resendSignal(id) {
   } catch (err) { showError("Resend failed: " + err.message); }
 }
 
-async function resendActive(id) {
-  try {
-    await api("/api/instruments/" + id + "/resend-active", { method: "POST" });
-    toast("Active signal resent to Telegram with a duplicate remark");
-  } catch (err) { showError("Resend active failed: " + err.message); }
-}
-
 function signalTypeBadge(t) {
   if (t === "PositionOpened") return badge("OPEN", "green");
   if (t === "PositionClosed") return badge("CLOSE", "blue");
@@ -613,17 +662,17 @@ function renderSignalRows(items) {
       (sigState.ticker ? " for " + esc(sigState.ticker) : "") + ".</td></tr>";
   } else {
     box.innerHTML = items.map(s => '<tr>' +
-      '<td class="mono">' + fmtTime(s.timestamp) + '</td>' +
-      '<td><b>' + esc(s.ticker || "") + '</b></td>' +
-      '<td>' + signalTypeBadge(s.type) + '</td>' +
-      '<td>' + (s.direction === "Long" ? badge("LONG", "green") : s.direction === "Short" ? badge("SHORT", "red") : "—") + '</td>' +
-      '<td class="mono num">' + fmtNum(s.price, 4) + '</td>' +
-      '<td class="mono num">' + fmtNum(s.stopLoss, 4) + '</td>' +
-      '<td class="mono num">' + fmtNum(s.takeProfit, 4) + '</td>' +
-      '<td class="mono num">' + fmtNum(s.exitPrice, 4) + '</td>' +
-      '<td>' + (s.exitReason ? esc(humanizeEnum(s.exitReason)) : "—") + '</td>' +
-      '<td class="mono num">' + fmtPct(s.pnlPercent) + '</td>' +
-      '<td><button class="btn" title="Repost this signal to Telegram as a duplicate" onclick="resendSignal(\'' + s.id + '\')">Resend signal to Telegram</button></td>' +
+      '<td data-label="Time" class="mono">' + fmtTime(s.timestamp) + '</td>' +
+      '<td data-label="Ticker"><b>' + esc(s.ticker || "") + '</b></td>' +
+      '<td data-label="Type">' + signalTypeBadge(s.type) + '</td>' +
+      '<td data-label="Direction">' + (s.direction === "Long" ? badge("LONG", "green") : s.direction === "Short" ? badge("SHORT", "red") : "—") + '</td>' +
+      '<td data-label="Price" class="mono num">' + fmtNum(s.price, 4) + '</td>' +
+      '<td data-label="SL" class="mono num">' + fmtNum(s.stopLoss, 4) + '</td>' +
+      '<td data-label="TP" class="mono num">' + fmtNum(s.takeProfit, 4) + '</td>' +
+      '<td data-label="Exit" class="mono num">' + fmtNum(s.exitPrice, 4) + '</td>' +
+      '<td data-label="Exit reason">' + (s.exitReason ? esc(humanizeEnum(s.exitReason)) : "—") + '</td>' +
+      '<td data-label="PnL" class="mono num">' + fmtPct(s.pnlPercent) + '</td>' +
+      '<td data-label="Actions"><button class="btn" title="Repost this signal to Telegram as a duplicate" onclick="resendSignal(\'' + s.id + '\')">Resend signal to Telegram</button></td>' +
     '</tr>').join("");
   }
   document.getElementById("sigTotal").textContent = sigState.total ? sigState.total + " entries" : "";

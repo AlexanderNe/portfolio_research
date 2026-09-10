@@ -23,8 +23,8 @@
   .btn:hover { background: #34445c; }
   #legend { font-size: 12px; color: #8fa3bf; margin-left: auto; }
   main { padding: 16px 20px; }
-  .chartwrap { position: relative; background: #161d29; border: 1px solid #2c3648; border-radius: 8px; }
-  canvas { display: block; width: 100%; height: 560px; }
+  .chartwrap { position: relative; background: #161d29; border: 1px solid #2c3648; border-radius: 8px; touch-action: none; }
+  canvas { display: block; width: 100%; touch-action: none; -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; }
   .tooltip {
     position: absolute; pointer-events: none; background: #232f42; border: 1px solid #3d4a5f;
     border-radius: 6px; padding: 6px 10px; font-size: 12px; line-height: 1.5;
@@ -34,6 +34,12 @@
   .tooltip .mk-entry { color: #7fd18a; }
   .tooltip .mk-exit { color: #e8b36f; }
   .errorbox { display: none; background: #4a1d1d; border: 1px solid #7a3030; color: #ffd2d2; border-radius: 6px; padding: 10px 14px; margin-bottom: 14px; }
+  @media (max-width: 720px) {
+    header { padding: 8px 12px; gap: 10px; }
+    main { padding: 10px 12px; }
+    .btn { padding: 8px 14px; font-size: 13px; }
+    #legend { margin-left: 0; }
+  }
 </style>
 </head>
 <body>
@@ -91,6 +97,9 @@ async function load() {
     if (res.status === 401) { fail("Authentication required."); return; }
     if (!res.ok) { fail("HTTP " + res.status + ": " + (await res.text())); return; }
     data = await res.json();
+    const dv = defaultView(data.candles);
+    view = dv.view;
+    priceView = dv.range;
     document.getElementById("title").textContent =
       (data.name ? data.name + " " : "") + data.ticker + " — daily price chart";
     render();
@@ -112,6 +121,7 @@ function resize() {
   const rect = cv.parentElement.getBoundingClientRect();
   const dpr = window.devicePixelRatio || 1;
   W = Math.max(300, Math.floor(rect.width));
+  H = Math.max(340, Math.min(560, Math.floor((window.innerHeight || 900) * 0.65)));
   cv.style.width = W + "px";
   cv.style.height = H + "px";
   cv.width = Math.floor(W * dpr);
@@ -182,7 +192,8 @@ function drawGrid() {
   let prevX = -100;
   for (let i = 0; i < labelCount; i++) {
     const f = view.from + (i / Math.max(1, labelCount - 1)) * (view.to - view.from);
-    const idx = Math.min(scale.n - 1, Math.round(f * scale.n));
+    if (f < 0 || f > 1) continue;
+    const idx = Math.min(scale.n - 1, Math.max(0, Math.round(f * scale.n)));
     const x = scale.xFor(idx);
     if (x - prevX < 46) continue;
     prevX = x;
@@ -190,23 +201,23 @@ function drawGrid() {
   }
 }
 
-function zoomHorizontal(mx, factor) {
+function applyHorizontal(mx, factor) {
   if (scale.n === 0) return;
   const fx = Math.min(1, Math.max(0, (mx - PAD.l) / scale.plotW));
   const curFrom = view.from, curTo = view.to;
   const curWidth = curTo - curFrom;
   const newWidth = Math.min(1, Math.max(Math.min(1, 2 / scale.n), curWidth * factor));
   const anchor = curFrom + fx * curWidth;
-  let newFrom = anchor - fx * newWidth;
-  let newTo = newFrom + newWidth;
-  if (newFrom < 0) { newFrom = 0; newTo = newWidth; }
-  if (newTo > 1) { newTo = 1; newFrom = 1 - newWidth; }
-  view.from = newFrom;
-  view.to = newTo;
+  view.from = anchor - fx * newWidth;
+  view.to = view.from + newWidth;
+}
+
+function zoomHorizontal(mx, factor) {
+  applyHorizontal(mx, factor);
   render();
 }
 
-function zoomVertical(my, factor) {
+function applyVertical(my, factor) {
   if (scale.n === 0) return;
   const fy = Math.min(1, Math.max(0, (my - PAD.t) / scale.plotH));
   const curMin = scale.minPrice, curMax = scale.maxPrice;
@@ -216,26 +227,26 @@ function zoomVertical(my, factor) {
   const anchor = curMax - fy * curSpan;
   const newMax = anchor + fy * newSpan;
   priceView = { min: newMax - newSpan, max: newMax };
+}
+
+function zoomVertical(my, factor) {
+  applyVertical(my, factor);
   render();
 }
 
 function panBy(dx, dy) {
+  if (!scale || scale.n === 0) return;
   if (dx !== 0) {
     const windowFrac = Math.max(1e-6, view.to - view.from);
     const shift = (dx / scale.plotW) * windowFrac;
-    let from = view.from - shift;
-    let to = view.to - shift;
-    if (from < 0) { to -= from; from = 0; }
-    if (to > 1) { from -= (to - 1); to = 1; }
-    view.from = from;
-    view.to = to;
+    view.from -= shift;
+    view.to -= shift;
   }
   if (dy !== 0) {
     const span = scale.maxPrice - scale.minPrice;
     const shift = (dy / scale.plotH) * span;
     priceView = { min: scale.minPrice + shift, max: scale.maxPrice + shift };
   }
-  render();
 }
 
 function drawCandles() {
@@ -331,6 +342,28 @@ function buildLegend() {
   document.getElementById("legend").textContent = parts.join("   ·   ");
 }
 
+function defaultView(cs) {
+  const arr = cs || [];
+  const n = arr.length;
+  if (n === 0) return { view: { from: 0, to: 1 }, range: null };
+  const last = new Date(arr[n - 1].time);
+  if (isNaN(last.getTime())) return { view: { from: 0, to: 1 }, range: null };
+  const cutoff = new Date(last.getFullYear(), last.getMonth() - 3, last.getDate());
+  let i = 0;
+  while (i < n - 1 && new Date(arr[i].time).getTime() < cutoff.getTime()) i++;
+  const from = i / n;
+  const width = 1 - from;
+  let lo = Infinity, hi = -Infinity;
+  for (let k = i; k < n; k++) {
+    if (arr[k].low < lo) lo = arr[k].low;
+    if (arr[k].high > hi) hi = arr[k].high;
+  }
+  if (!isFinite(lo)) lo = 0;
+  if (!isFinite(hi)) hi = 1;
+  const pad = 0.06 * (hi - lo) || 1;
+  return { view: { from, to: from + width * 1.06 }, range: { min: lo - pad, max: hi + pad } };
+}
+
 function render() {
   resize();
   ctx.clearRect(0, 0, W, H);
@@ -348,11 +381,8 @@ function render() {
   buildLegend();
 }
 
-cv.addEventListener("mousemove", e => {
-  if (!scale || scale.n === 0 || panning) { tip.style.display = "none"; return; }
-  const rect = cv.getBoundingClientRect();
-  const mx = e.clientX - rect.left;
-  const my = e.clientY - rect.top;
+function showTipAt(mx, my) {
+  if (!scale || scale.n === 0) { tip.style.display = "none"; return; }
   const fx = (mx - PAD.l) / Math.max(1, scale.plotW);
   const idx = Math.round((view.from + fx * (view.to - view.from)) * scale.n);
   if (idx < 0 || idx >= scale.n) { tip.style.display = "none"; return; }
@@ -375,6 +405,12 @@ cv.addEventListener("mousemove", e => {
   tip.style.display = "block";
   tip.style.left = (mx + 14) + "px";
   tip.style.top = (my + 14) + "px";
+}
+
+cv.addEventListener("mousemove", e => {
+  if (panning) { tip.style.display = "none"; return; }
+  const rect = cv.getBoundingClientRect();
+  showTipAt(e.clientX - rect.left, e.clientY - rect.top);
 });
 
 cv.addEventListener("mouseleave", () => { tip.style.display = "none"; });
@@ -390,9 +426,11 @@ cv.addEventListener("wheel", e => {
 }, { passive: false });
 
 document.getElementById("btnReset").onclick = () => {
-  view = { from: 0, to: 1 };
-  priceView = null;
-  if (data) render();
+  if (!data) return;
+  const dv = defaultView(data.candles);
+  view = dv.view;
+  priceView = dv.range;
+  render();
 };
 
 cv.addEventListener("mousedown", e => {
@@ -411,6 +449,7 @@ window.addEventListener("mousemove", e => {
   panning.lastX = e.clientX;
   panning.lastY = e.clientY;
   panBy(dx, dy);
+  render();
 });
 
 window.addEventListener("mouseup", e => {
@@ -425,6 +464,67 @@ window.addEventListener("blur", () => {
     cv.style.cursor = "";
   }
 });
+
+let gesture = null;
+let tap = null;
+
+function touchDist(a, b) {
+  return Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+}
+
+cv.addEventListener("touchstart", e => {
+  if (e.touches.length >= 2) {
+    e.preventDefault();
+    gesture = {
+      dist: touchDist(e.touches[0], e.touches[1]),
+      midX: (e.touches[0].clientX + e.touches[1].clientX) / 2,
+      midY: (e.touches[0].clientY + e.touches[1].clientY) / 2
+    };
+    tap = null;
+    tip.style.display = "none";
+  } else if (e.touches.length === 1 && !gesture) {
+    tap = { x: e.touches[0].clientX, y: e.touches[0].clientY, moved: false };
+  }
+}, { passive: false });
+
+cv.addEventListener("touchmove", e => {
+  if (!scale || scale.n === 0) return;
+  if (e.touches.length >= 2 && gesture) {
+    e.preventDefault();
+    tip.style.display = "none";
+    tap = null;
+    const t = e.touches;
+    const dist = touchDist(t[0], t[1]);
+    const midX = (t[0].clientX + t[1].clientX) / 2;
+    const midY = (t[0].clientY + t[1].clientY) / 2;
+    const rect = cv.getBoundingClientRect();
+    const factor = gesture.dist > 0 ? gesture.dist / dist : 1;
+    applyHorizontal(midX - rect.left, factor);
+    applyVertical(midY - rect.top, factor);
+    panBy(midX - gesture.midX, midY - gesture.midY);
+    render();
+    gesture.dist = dist;
+    gesture.midX = midX;
+    gesture.midY = midY;
+  } else if (e.touches.length === 1 && tap && !gesture) {
+    const t = e.touches[0];
+    if (Math.hypot(t.clientX - tap.x, t.clientY - tap.y) > 8) tap.moved = true;
+  }
+}, { passive: false });
+
+cv.addEventListener("touchend", e => {
+  const remaining = e.touches.length;
+  if (remaining < 2) gesture = null;
+  if (remaining === 0) {
+    if (tap && !tap.moved && scale && scale.n > 0) {
+      const rect = cv.getBoundingClientRect();
+      showTipAt(tap.x - rect.left, tap.y - rect.top);
+    }
+    tap = null;
+  }
+});
+cv.addEventListener("touchcancel", () => { gesture = null; tap = null; });
+
 window.addEventListener("resize", () => { if (data) render(); });
 
 load();

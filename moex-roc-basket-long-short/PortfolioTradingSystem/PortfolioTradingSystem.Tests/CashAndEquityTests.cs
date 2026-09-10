@@ -54,6 +54,55 @@ public class CashAndEquityTests
     }
 
     [Fact]
+    public void UnrealizedPnlMatchesExitPnlAtSameMarkPrice()
+    {
+        var st = Warmed(longSignal: true);
+        st.TryOpen(100m, T0);
+
+        // Marked at TP: must equal the realized PnL of a StopLoss/TakeProfit exit there
+        // (gross 14985 - closeComm 28.194 - openComm 22.2).
+        var atTp = st.UnrealizedPnl(127m);
+        Assert.Equal(14934.606m, atTp!.Value.Rub);
+        Assert.Equal(14934.606m / 55500m * 100m, atTp.Value.Percent);
+
+        var e = st.CheckStop(128m, 120m, T0.AddMinutes(1)); // TP 127
+        Assert.Equal(127m, e!.ExitPrice);
+        Assert.Equal(atTp.Value.Rub, e.PnlRub);
+    }
+
+    [Fact]
+    public void UnrealizedPnlAtEntryIsNegativeCommissions()
+    {
+        var st = Warmed(longSignal: true);
+        st.TryOpen(100m, T0);
+
+        // At the entry price gross is zero, so only both commissions remain.
+        Assert.Equal(-44.4m, st.UnrealizedPnl(100m)!.Value.Rub); // -(22.2 + 22.2)
+    }
+
+    [Fact]
+    public void UnrealizedPnlForShortMatchesSimulatorExit()
+    {
+        var st = Warmed(longSignal: false);
+        st.TryOpen(100m, T0);
+
+        // Marked at SL 118: same as the realized SL exit PnL.
+        var atSl = st.UnrealizedPnl(118m);
+        Assert.Equal(-10038.396m, atSl!.Value.Rub);
+
+        var e = st.CheckStop(200m, 50m, T0.AddMinutes(1)); // SL 118
+        Assert.Equal(ExitReason.StopLoss, e!.Reason);
+        Assert.Equal(atSl.Value.Rub, e.PnlRub);
+    }
+
+    [Fact]
+    public void UnrealizedPnlIsNullWhenFlat()
+    {
+        var st = Warmed(longSignal: true);
+        Assert.Null(st.UnrealizedPnl(100m));
+    }
+
+    [Fact]
     public void RestoredPositionProvidesSameExitMath()
     {
         var st = New();

@@ -28,6 +28,9 @@ public sealed record TradeClosedEvent(
     DateTimeOffset EntryTime,
     DateTimeOffset ExitTime);
 
+/// <summary>Unrealized PnL of the open position marked at a price.</summary>
+public readonly record struct OpenPositionPnl(decimal Rub, decimal Percent);
+
 /// <summary>Point-in-time snapshot used for admin metrics / state view.</summary>
 public sealed record EngineStateSnapshot(
     bool IsWarmedUp,
@@ -265,6 +268,29 @@ public sealed class MomentumEngineState
         return new TradeClosedEvent(
             p.Ticker, p.Direction, p.Units, p.EntryPrice, price, reason,
             pnl, returnPct, p.OpenCommission + closeCommission, p.EntryTime, time);
+    }
+
+    /// <summary>
+    /// Unrealized PnL of the open position, marked at <paramref name="currentPrice"/>,
+    /// using the same accounting as <see cref="ClosePosition"/>: gross minus the closing
+    /// commission (estimated at the mark price) and the already-paid opening commission,
+    /// matched against entry notional for the percent. Null when flat.
+    /// </summary>
+    public OpenPositionPnl? UnrealizedPnl(decimal currentPrice)
+    {
+        var p = Position;
+        if (p is null)
+        {
+            return null;
+        }
+
+        int dir = (int)p.Direction;
+        decimal commission = _o.CommissionPct / 100m;
+        decimal gross = (currentPrice - p.EntryPrice) * p.Units * dir * _o.PointRub;
+        decimal closeCommission = currentPrice * p.Units * commission;
+        decimal rub = gross - closeCommission - p.OpenCommission;
+        decimal baseNotional = p.EntryPrice * p.Units * _o.PointRub;
+        return new OpenPositionPnl(rub, baseNotional > 0 ? rub / baseNotional * 100m : 0m);
     }
 
     private void OnBarCompleted(Candle bar)

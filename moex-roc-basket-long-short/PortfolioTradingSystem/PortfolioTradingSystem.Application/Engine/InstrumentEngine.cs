@@ -292,16 +292,13 @@ public sealed class InstrumentEngine : IAsyncDisposable
             _state.SetCash(_strategyOptions.InitialCapital + realized);
         }
 
+        decimal restoreMark = _state.Position is not null
+            ? (bars.Count > 0 ? bars[^1].Close : _state.Position.EntryPrice)
+            : 0m;
         _metrics.Update(InstrumentId, m =>
         {
-            var snapshot = _state.GetSnapshot(_state.Position?.EntryPrice ?? 0m);
-            m.PositionState = snapshot.PositionDirection switch
-            {
-                SignalDirection.Long => "long",
-                SignalDirection.Short => "short",
-                _ => "flat",
-            };
-            m.PositionSince = snapshot.EntryTime;
+            var snapshot = _state.GetSnapshot(restoreMark);
+            ApplyPositionMetrics(m, snapshot, restoreMark);
         });
 
         string lastBar = bars.Count > 0
@@ -387,14 +384,22 @@ public sealed class InstrumentEngine : IAsyncDisposable
             m.Cash = s.Cash;
             m.Equity = s.Equity;
             m.PendingSignal = s.PendingSignal;
-            m.PositionState = s.PositionDirection switch
-            {
-                SignalDirection.Long => "long",
-                SignalDirection.Short => "short",
-                _ => "flat",
-            };
-            m.PositionSince = s.EntryTime;
+            ApplyPositionMetrics(m, s, minute.Close);
         });
+    }
+
+    private void ApplyPositionMetrics(InstrumentMetrics m, EngineStateSnapshot s, decimal markPrice)
+    {
+        m.PositionState = s.PositionDirection switch
+        {
+            SignalDirection.Long => "long",
+            SignalDirection.Short => "short",
+            _ => "flat",
+        };
+        m.PositionSince = s.EntryTime;
+        var pnl = _state.UnrealizedPnl(markPrice);
+        m.PositionPnl = pnl?.Rub;
+        m.PositionPnlPercent = pnl?.Percent;
     }
 
     private async Task PublishOpenedAsync(TradeOpenedEvent e, CancellationToken ct)

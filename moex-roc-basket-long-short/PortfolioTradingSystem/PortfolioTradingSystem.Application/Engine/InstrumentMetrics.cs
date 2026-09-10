@@ -47,4 +47,10 @@ public sealed class InstrumentMetrics
     public string PositionState { get; set; } = "flat";
 
     public DateTimeOffset? PositionSince { get; set; }
+
+    /// <summary>Open position unrealized PnL in RUB at the last price (null when flat).</summary>
+    public decimal? PositionPnl { get; set; }
+
+    /// <summary>Open position unrealized PnL as % of entry notional (null when flat).</summary>
+    public decimal? PositionPnlPercent { get; set; }
 }

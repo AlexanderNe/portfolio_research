@@ -171,6 +171,21 @@ public sealed class EfTradeLogRepository : ITradeLogRepository
             .Where(x => x.InstrumentId == instrumentId)
             .SumAsync(x => (decimal?)x.PnlRub, ct).ConfigureAwait(false) ?? 0m;
     }
+
+    public async Task<decimal> SumAllRealizedPnlAsync(CancellationToken ct)
+    {
+        await using var db = await _factory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        return await db.TradeLogs.AsNoTracking()
+            .SumAsync(x => (decimal?)x.PnlRub, ct).ConfigureAwait(false) ?? 0m;
+    }
+
+    public async Task<IReadOnlyList<TradeLogEntry>> GetAllAsync(CancellationToken ct)
+    {
+        await using var db = await _factory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        return await db.TradeLogs.AsNoTracking()
+            .OrderBy(x => x.ExitTime)
+            .ToListAsync(ct).ConfigureAwait(false);
+    }
 }
 
 public sealed class EfSignalLogRepository : ISignalLogRepository
@@ -211,6 +226,7 @@ public sealed class EfSignalLogRepository : ISignalLogRepository
             .Where(x => x.InstrumentId == instrumentId)
             .OrderByDescending(x => x.Timestamp)
             .Take(limit)
+            .OrderBy(x => x.Timestamp)
             .ToListAsync(ct).ConfigureAwait(false);
     }
 

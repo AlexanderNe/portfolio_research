@@ -47,6 +47,12 @@ public interface ITradeLogRepository
 
     /// <summary>Sum of net PnL of all closed trades for the instrument (used to restore engine cash).</summary>
     Task<decimal> SumRealizedPnlAsync(Guid instrumentId, CancellationToken ct);
+
+    /// <summary>Sum of net PnL of all closed trades across all instruments (portfolio total).</summary>
+    Task<decimal> SumAllRealizedPnlAsync(CancellationToken ct);
+
+    /// <summary>All closed trades across all instruments, ordered by exit time ascending (equity curve).</summary>
+    Task<IReadOnlyList<TradeLogEntry>> GetAllAsync(CancellationToken ct);
 }
 
 /// <summary>One page of signal-log entries, newest first.</summary>
