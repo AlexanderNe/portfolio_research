@@ -12,9 +12,19 @@ No margin financing and no short-borrow cost are modelled for the leverage-scan
 rows (reference only). The no-leverage rows are economy-clean: notional <= cash
 on every position.
 
-Walk results are cached per config in tables/_cache for fast rebuilds.
+Walk results are cached in tables/_cache under a key that covers the config,
+the parameter grid, the walk-forward windows, the universe AND a content hash of
+the source CSVs - refreshing the bars or changing a parameter invalidates the
+cache instead of silently returning the previous run. `--no-cache` forces a full
+recompute.
+
+Pooled and per-name equity are mark-to-market: realised PnL plus open positions
+revalued at each daily close.
 """
+import hashlib
+import json
 import pickle
+import sys
 from pathlib import Path
 import pandas as pd
 import numpy as np
@@ -34,31 +44,64 @@ GRID = s.strategy_grids("bar")["roc_momentum"]
 POOL = 100_000.0
 RISKS = [1, 2, 3, 5, 8, 10, 15]
 LEVS = [1, 2, 3, 5, 7, 10]
+TRAIN_BARS = 504
+OOS_BARS = 126
+MIN_TRADES = 3
+BARS_PER_YEAR = 252.0
+USE_CACHE = True
 
 
 def cfg(risk, lev):
-    return {"commission": 0.04, "relative_stop": 0.0, "risk_pct": risk,
-            "fixed_fee": 0.0, "fee_selection": False, "point_rub": 1.0,
+    return {"commission": 0.04, "risk_pct": risk,
+            "fixed_fee": 0.0, "fee_selection": True, "point_rub": 1.0,
             "leverage": lev, "fixed_units": 0, "trail_grid": (0.0,),
             "sl_atr": 2.0, "tp_atr": 3.0, "exit_grid": [(2.0, 3.0)],
-            "range_targets": [], "pt_targets": [], "longs_only": False}
+            "range_targets": [], "pt_targets": [], "longs_only": False,
+            "carry_positions": True}
 
 
-def cache_path(risk, lev, nameset):
-    return CACHE / ("%s_%s_%s.pkl" % (int(risk), int(lev), nameset))
+_FINGERPRINTS = {}
 
 
-def load_cached(risk, lev, nameset):
-    p = cache_path(risk, lev, nameset)
+def data_fingerprint(names):
+    """Content hash of the CSVs a run reads, so refreshed bars invalidate the cache."""
+    key = tuple(sorted(names))
+    if key not in _FINGERPRINTS:
+        h = hashlib.sha1()
+        for t in key:
+            fp = Path(DATA) / ("%s.csv" % t)
+            h.update(t.encode("utf-8"))
+            if fp.exists():
+                h.update(hashlib.sha1(fp.read_bytes()).digest())
+        _FINGERPRINTS[key] = h.hexdigest()
+    return _FINGERPRINTS[key]
+
+
+def cache_key(risk, lev, names):
+    """Everything a run depends on: config, grid, windows, universe and data."""
+    payload = json.dumps({
+        "cfg": cfg(risk, lev), "grid": GRID, "train": TRAIN_BARS,
+        "oos": OOS_BARS, "min_trades": MIN_TRADES,
+        "names": sorted(names), "data": data_fingerprint(names),
+    }, sort_keys=True, default=str)
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def cache_path(risk, lev, nameset, key):
+    return CACHE / ("%s_%s_%s_%s.pkl" % (int(risk), int(lev), nameset, key))
+
+
+def load_cached(risk, lev, nameset, key):
+    p = cache_path(risk, lev, nameset, key)
     if p.exists():
         with open(p, "rb") as f:
             return pickle.load(f)
     return None
 
 
-def save_cached(risk, lev, nameset, folds, trades, nbars):
+def save_cached(risk, lev, nameset, key, folds, trades, nbars):
     CACHE.mkdir(parents=True, exist_ok=True)
-    with open(cache_path(risk, lev, nameset), "wb") as f:
+    with open(cache_path(risk, lev, nameset, key), "wb") as f:
         pickle.dump({"folds": folds, "trades": trades, "nbars": nbars}, f)
 
 
@@ -74,8 +117,9 @@ def run_walk(risk, lev, names):
         nbars = max(nbars, len(df))
         if len(df) < 700:
             continue
-        for f in s.walk_forward(df, "roc_momentum", GRID, False, 504, 126,
-                                cfg(risk, lev), ticker=t, min_trades=3):
+        for f in s.walk_forward(df, "roc_momentum", GRID, False,
+                                TRAIN_BARS, OOS_BARS,
+                                cfg(risk, lev), ticker=t, min_trades=MIN_TRADES):
             oos = f["oos"]
             folds.append({"ticker": t, "total_pnl": oos["total_pnl"],
                           "n_trades": oos["n_trades"],
@@ -88,14 +132,59 @@ def run_walk(risk, lev, names):
 
 
 def get(risk, lev, names):
-    nameset = "25" if set(names) == set(ORIG) else "40"
-    got = load_cached(risk, lev, nameset)
+    nameset = "%d" % len(set(names))
+    key = cache_key(risk, lev, names)
+    got = load_cached(risk, lev, nameset, key) if USE_CACHE else None
     if got is None:
-        print("walk risk=%s lev=%s names=%s ..." % (risk, lev, nameset))
+        print("walk risk=%s lev=%s names=%s (%s) ..." % (risk, lev, nameset, key))
         folds, trades, nbars = run_walk(risk, lev, names)
         got = {"folds": folds, "trades": trades, "nbars": nbars}
-        save_cached(risk, lev, nameset, folds, trades, nbars)
+        save_cached(risk, lev, nameset, key, folds, trades, nbars)
     return got
+
+
+_CLOSES = {}
+
+
+def closes_of(ticker):
+    """Daily closes of one name, indexed by normalised date (memoised)."""
+    if ticker not in _CLOSES:
+        fp = Path(DATA) / ("%s.csv" % ticker)
+        d = s.load_candle_data(str(fp))
+        _CLOSES[ticker] = (d.set_index(pd.to_datetime(d["timestamp"]).dt.normalize())
+                            ["close"].astype(float))
+    return _CLOSES[ticker]
+
+
+def pooled_equity(trades, n_names):
+    """Daily pooled equity, mark-to-market.
+
+    pool + realised PnL of closed trades + open positions revalued at each daily
+    close. Summing realised PnL alone (the old behaviour) skips the whole life of
+    every open position - with a 16-day average hold that hides most of the real
+    drawdown.
+    """
+    pool = POOL * n_names
+    if not len(trades):
+        return pd.Series(dtype=float)
+    tickers = sorted(set(trades["ticker"]))
+    idx = None
+    for t in tickers:
+        c = closes_of(t).index
+        idx = c if idx is None else idx.union(c)
+    entries = pd.to_datetime(trades["entry_time"]).dt.normalize()
+    exits = pd.to_datetime(trades["exit_time"]).dt.normalize()
+    idx = idx[(idx >= entries.min()) & (idx <= exits.max())]
+    realized = _daily_pnl(trades).reindex(idx, fill_value=0.0).cumsum()
+    unreal = np.zeros(len(idx))
+    for tk, g in trades.groupby("ticker"):
+        vals = closes_of(tk).reindex(idx).ffill().to_numpy()
+        a = idx.searchsorted(pd.to_datetime(g["entry_time"]).dt.normalize().to_numpy())
+        b = idx.searchsorted(pd.to_datetime(g["exit_time"]).dt.normalize().to_numpy())
+        for i0, i1, d, u, e in zip(a, b, g["dir"], g["units"], g["entry"]):
+            if i1 > i0:
+                unreal[i0:i1] += d * u * (vals[i0:i1] - e)
+    return pool + realized + pd.Series(unreal, index=idx)
 
 
 def pool_metrics(folds, trades, n_names, years):
@@ -105,13 +194,7 @@ def pool_metrics(folds, trades, n_names, years):
     pos_f = int((folds["total_pnl"] > 0).sum()) if n_fold else 0
     pool = POOL * n_names
     dd_folds = float(folds["max_drawdown"].mean()) if n_fold else 0.0
-    eq = {}
-    if len(trades):
-        for _, tr in trades.iterrows():
-            d = pd.Timestamp(tr["exit_time"]).normalize()
-            eq[d] = eq.get(d, 0) + tr["pnl"]
-    ser = pd.Series(eq).sort_index()
-    eqv = pool + ser.cumsum()
+    eqv = pooled_equity(trades, n_names)
     pool_dd = float((eqv / eqv.cummax() - 1).min() * 100) if len(eqv) else 0.0
     return {"total": total, "n_trades": n_tr, "pos_folds": pos_f,
             "n_fold": n_fold, "pool_dd": pool_dd, "avg_fold_dd": dd_folds,
@@ -142,21 +225,42 @@ def trade_stats(tr):
 
 
 def pct_year(trades, n_names):
+    """Per-year pooled PnL. `partial` marks years the OOS window does not cover
+    end to end - their % is a fraction of the pool over part of a year, never a
+    per-annum rate."""
     pool = POOL * n_names
     rows = []
-    for y, g in trades.groupby(pd.to_datetime(trades["exit_time"]).dt.year):
+    ts = pd.to_datetime(trades["exit_time"])
+    for y, g in trades.groupby(ts.dt.year):
         r = trade_stats(g)
+        gt = pd.to_datetime(g["exit_time"])
+        covered = (gt.max() - gt.min()).days
         rows.append({"year": y, "pnl_RUB": r["total"],
                      "pnl_pct": r["total"] / pool * 100, "trades": r["n"],
                      "win_pct": r["win"], "avg_trade": r["avg"],
-                     "profit_factor": r["pf"]})
+                     "profit_factor": r["pf"],
+                     "partial": bool(covered < 300)})
+    return pd.DataFrame(rows).sort_values("year").reset_index(drop=True)
+
+
+def ls_by_year(trades, n_names):
+    """Long/short split per year - the report used to assert this without computing it."""
+    pool = POOL * n_names
+    rows = []
+    for y, g in trades.groupby(pd.to_datetime(trades["exit_time"]).dt.year):
+        sh = float(g.loc[g["dir"] == -1, "pnl"].sum())
+        lg = float(g.loc[g["dir"] == 1, "pnl"].sum())
+        rows.append({"year": int(y), "short_pnl": sh, "long_pnl": lg,
+                     "short_pct": sh / pool * 100, "long_pct": lg / pool * 100,
+                     "short_n": int((g["dir"] == -1).sum()),
+                     "long_n": int((g["dir"] == 1).sum())})
     return pd.DataFrame(rows).sort_values("year").reset_index(drop=True)
 
 
 def by_name(trades):
     out = []
     for t, g in trades.groupby("ticker"):
-        cur = POOL + _daily_pnl(g).cumsum()
+        cur = pooled_equity(g, 1)
         dd = float((cur / cur.cummax() - 1).min() * 100) if len(cur) else 0.0
         lp = g.loc[g["dir"] == 1, "pnl"].sum()
         sp = g.loc[g["dir"] == -1, "pnl"].sum()
@@ -186,16 +290,15 @@ def _daily_pnl(trades):
 
 
 def chart_pooled(trades, n_names, risk):
-    ser = _daily_pnl(trades)
-    eqv = POOL * n_names + ser.cumsum()
+    eqv = pooled_equity(trades, n_names)
     eqv = eqv.resample("D").last().ffill()
     dd = (eqv / eqv.cummax() - 1) * 100
     fig, axes = plt.subplots(2, 1, figsize=(11, 7),
                              gridspec_kw={"height_ratios": [2.4, 1]})
     axes[0].plot(eqv.index, eqv, lw=1.5, color="#1257a0")
     axes[0].set_title(
-        "Совокупная кривая средств OOS — %d бумаг, риск %.0f%%/сделку, без плеча, "
-        "лонги и шорты\nмакс. просадка %.1f%%, итог %s ₽ (%+.1f%% на пул %s ₽)"
+        "Совокупная кривая средств OOS (mark-to-market) — %d бумаг, риск %.0f%%/сделку, "
+        "без плеча, лонги и шорты\nмакс. просадка %.1f%%, итог %s ₽ (%+.1f%% на пул %s ₽)"
         % (n_names, risk, dd.min(), f(eqv.iloc[-1] - POOL * n_names),
            (eqv.iloc[-1] / (POOL * n_names) - 1) * 100,
            f(POOL * n_names)), fontsize=10)
@@ -210,8 +313,7 @@ def chart_pooled(trades, n_names, risk):
 def chart_pername(trades):
     rows = []
     for t, g in trades.groupby("ticker"):
-        ser = _daily_pnl(g)
-        rows.append((t, POOL + ser.cumsum()))
+        rows.append((t, pooled_equity(g, 1)))
     if not rows:
         return
     rows.sort(key=lambda r: r[1].iloc[-1] / r[1].iloc[0])
@@ -391,7 +493,8 @@ def chart_contribution(trades):
 
 
 def chart_year_bars(ye):
-    y = ye["year"].astype(str).tolist()
+    y = [("%s*" % r["year"]) if r.get("partial") else str(r["year"])
+         for r in ye.to_dict("records")]
     b = ye["pnl_pct"].tolist()
     i = ye["IMOEX_pct"].tolist()
     x = np.arange(len(y))
@@ -409,16 +512,18 @@ def chart_year_bars(ye):
     ax.axhline(0, color="k", lw=0.8)
     ax.set_xticks(x)
     ax.set_xticklabels(y)
-    ax.set_ylabel("% годовых")
-    ax.set_title("Доходность по годам: стратегия (лонги+шорты, без плеча) "
-                 "vs индекс IMOEX (цена)", fontsize=11)
+    ax.set_ylabel("% к пулу за год")
+    ax.set_title("Результат по годам: стратегия (лонги+шорты, без плеча) "
+                 "vs индекс IMOEX (цена)\n* — год покрыт OOS-окном не полностью",
+                 fontsize=11)
     ax.legend(fontsize=9)
     plt.tight_layout()
     plt.savefig(IMG / "returns_by_year.png", dpi=120)
 
 
 def chart_year_money(ye):
-    y = ye["year"].astype(str).tolist()
+    y = [("%s*" % r["year"]) if r.get("partial") else str(r["year"])
+         for r in ye.to_dict("records")]
     p = ye["pnl_RUB"].tolist()
     x = np.arange(len(y))
     fig, ax = plt.subplots(figsize=(11, 6))
@@ -540,6 +645,12 @@ MD_RISKS = """1. **Это потолок, а не рекомендация.** З
    - гэпы на шортах (лимитные дни, когда стоп 2·ATR «проколот» открытием);
    - влияние собственных сделок на цену малоликвидных бумаг (номинал до 100
      тыс. ₽ на бумагу при 10–15% риске);
+   - **дивидендные отсечки.** Дневные бары MOEX — «грязные» цены без поправки
+     на дивиденды. Лонг, удерживаемый через отсечку, видит гэп вниз и фиксирует
+     убыток, хотя в реальности получил бы дивиденд; шорт получает этот гэп как
+     прибыль, хотя при шорте акции дивиденд списывается в пользу кредитора, а
+     при шорте фьючерсом гэпа нет вовсе (дивиденд уже в базисе). Эффект НЕ
+     смоделирован и смещает разбивку лонги/шорты в пользу шортов;
    - (справочная таблица §7) — маржинальное финансирование лонгов на плече.
    Реальная доходность будет ниже; насколько — покажет только живой счёт или
    реплей на реальном потоке минуток.
@@ -583,6 +694,7 @@ HTML_RISKS = """<ol>
     <li><strong>плата за заёмный шорт</strong> (MOEX/брокер берёт за шорты; размер зависит от бумаги и срока) — не учтена;</li>
     <li>гэпы на шортах (лимитные дни, когда стоп 2·ATR «проколот» открытием);</li>
     <li>влияние собственных сделок на цену малоликвидных бумаг (номинал до 100 тыс. ₽ на бумагу при 10–15% риске);</li>
+    <li><strong>дивидендные отсечки.</strong> Дневные бары MOEX — «грязные» цены без поправки на дивиденды. Лонг, удерживаемый через отсечку, видит гэп вниз и фиксирует убыток, хотя в реальности получил бы дивиденд; шорт получает этот гэп как прибыль, хотя при шорте акции дивиденд списывается в пользу кредитора, а при шорте фьючерсом гэпа нет вовсе (дивиденд уже в базисе). Эффект НЕ смоделирован и смещает разбивку лонги/шорты в пользу шортов;</li>
     <li>(справочная таблица §7) — маржинальное финансирование лонгов на плече.</li>
   </ul>
   Реальная доходность будет ниже; насколько — покажет только живой счёт или реплей на реальном потоке минуток.</li>
@@ -678,12 +790,18 @@ def _md_method():
     return ("1. **Честный out-of-sample.** Параметры (n и порог) выбираются только на\n"
             "   обучающем окне 504 бара и применяются без изменений на следующие 126\n"
             "   баров. Каждая отдельная ячейка — свежие 100 тыс. ₽ с фиксированным пулом.\n"
-            "2. **Нет заглядывания в будущее.** ATR для стопа и размера позиции берётся с\n"
-            "   предыдущего закрытия (`atr[i-1]`), вход — только по открытию следующего\n"
-            "   бара. OOS-сигнал «прогревается» реальной пред-фолдовой историей.\n"
+            "2. **Нет заглядывания в будущее и нет невозможных сделок.** ATR для стопа и\n"
+            "   размера позиции берётся с предыдущего закрытия (`atr[i-1]`), вход — только\n"
+            "   по открытию следующего бара. Бар, на котором позиция закрылась, НЕ может\n"
+            "   открыть новую: на его открытии позиция ещё была в рынке. Бар, открывшийся\n"
+            "   за уровнем, исполняет стоп/тейк по открытию. OOS-сигнал И ATR\n"
+            "   «прогреваются» реальной пред-фолдовой историей.\n"
             "3. **Фиксированный пул.** Результаты складываются по сделкам (не цепной\n"
             "   реинвест по фолдам — это взрывает до миллиардов и не является реальным\n"
-            "   счётом). Пул на графиках = 4,0 млн ₽ (40 × 100 тыс.).\n"
+            "   счётом). Пул на графиках = 4,0 млн ₽ (40 × 100 тыс.), кривая —\n"
+            "   mark-to-market: открытые позиции переоцениваются по дневному закрытию,\n"
+            "   поэтому просадка учитывает и «бумажный» минус. Открытая на границе фолда\n"
+            "   позиция передаётся в следующий фолд, а не закрывается принудительно.\n"
             "4. **40 бумаг, все без исключения** (включая IMOEX как индекс-прокси),\n"
             "   данные MOEX `interval=24`, дневные бары.")
 
@@ -691,13 +809,13 @@ def _md_method():
 def _html_method():
     return """<ol>
 <li><strong>Честный out-of-sample.</strong> Параметры (n и порог) выбираются только на обучающем окне 504 бара и применяются без изменений на следующие 126 баров. Каждая отдельная ячейка — свежие 100 тыс. ₽ с фиксированным пулом.</li>
-<li><strong>Нет заглядывания в будущее.</strong> ATR для стопа и размера позиции берётся с предыдущего закрытия (<code>atr[i-1]</code>), вход — только по открытию следующего бара. OOS-сигнал «прогревается» реальной пред-фолдовой историей.</li>
-<li><strong>Фиксированный пул.</strong> Результаты складываются по сделкам (не цепной реинвест по фолдам — это взрывает до миллиардов и не является реальным счётом). Пул на графиках = 4,0 млн ₽ (40 × 100 тыс.).</li>
+<li><strong>Нет заглядывания в будущее и нет невозможных сделок.</strong> ATR для стопа и размера позиции берётся с предыдущего закрытия (<code>atr[i-1]</code>), вход — только по открытию следующего бара. Бар, на котором позиция закрылась, НЕ может открыть новую: на его открытии позиция ещё была в рынке. Бар, открывшийся за уровнем, исполняет стоп/тейк по открытию. OOS-сигнал И ATR «прогреваются» реальной пред-фолдовой историей.</li>
+<li><strong>Фиксированный пул.</strong> Результаты складываются по сделкам (не цепной реинвест по фолдам — это взрывает до миллиардов и не является реальным счётом). Пул на графиках = 4,0 млн ₽ (40 × 100 тыс.), кривая — mark-to-market: открытые позиции переоцениваются по дневному закрытию, поэтому просадка учитывает и «бумажный» минус. Открытая на границе фолда позиция передаётся в следующий фолд, а не закрывается принудительно.</li>
 <li><strong>40 бумаг, все без исключения</strong> (включая IMOEX как индекс-прокси), данные MOEX <code>interval=24</code>, дневные бары.</li>
 </ol>"""
 
 
-def build_reports(res, risk_df, lev_df, ye, bn, st40, lss, trades40, years):
+def build_reports(res, risk_df, lev_df, ye, bn, st40, lss, lsy, trades40, years):
     n40 = len(BASKET40)
     m = pool_metrics(res[("risk", 10, 1)][0], trades40, n40, years)
     total, pool = m["total"], m["pool"]
@@ -716,21 +834,44 @@ def build_reports(res, risk_df, lev_df, ye, bn, st40, lss, trades40, years):
     last = ts.max().strftime("%Y-%m")
 
     yd = {int(r["year"]): r for r in ye.to_dict("records")}
-    y2022 = _pct(yd[2022]["pnl_pct"]); y2024 = _pct(yd[2024]["pnl_pct"])
-    y2025 = _pct(yd[2025]["pnl_pct"]); y2026 = _pct(yd[2026]["pnl_pct"])
-    y2019 = _pct(yd[2019]["pnl_pct"])
+    lsyd = {int(r["year"]): r for r in lsy.to_dict("records")}
+    # Bear / bull years are read off the index, never hardcoded: the package is
+    # rebuilt on refreshed data and the year list changes with it.
+    bear = [y for y, r in sorted(yd.items())
+            if r["IMOEX_pct"] == r["IMOEX_pct"] and r["IMOEX_pct"] < 0]
+    bull = [y for y, r in sorted(yd.items())
+            if r["IMOEX_pct"] == r["IMOEX_pct"] and r["IMOEX_pct"] > 0]
+    neg = [y for y, r in sorted(yd.items()) if r["pnl_RUB"] < 0]
+    best_y = max(yd.items(), key=lambda kv: kv[1]["pnl_pct"])
+    worst_y = min(yd.items(), key=lambda kv: kv[1]["pnl_pct"])
+
+    def _yl(years_list):
+        return ", ".join(str(y) for y in years_list) or "—"
+
+    def _side_line(years_list):
+        """'2022 (шорты +X, лонги +Y)' - the actual split, not an assertion."""
+        parts = []
+        for y in years_list:
+            r = lsyd.get(y)
+            if r is None:
+                continue
+            parts.append("%d (шорты %s, лонги %s)"
+                         % (y, _pct(r["short_pct"]), _pct(r["long_pct"])))
+        return "; ".join(parts) or "—"
+
+    sh = lss[lss["direction"] == "short"].iloc[0] if len(lss) else None
+    lg = lss[lss["direction"] == "long"].iloc[0] if len(lss) else None
 
     subtitle = "40 бумаг · без плеча · комиссия 0,04% · OOS walk-forward 504/126 · риск 10%"
     summary = ("Портфельная стратегия **ROC-импульс на дневных барах** "
                "(40 бумаг MOEX, walk-forward 504/126, комиссия 0,04%%, "
                "стоп 2·ATR / тейк 3·ATR) с разрешёнными **шортами**. Плечо "
                "**не используется**: номинал позиции не превышает наличных денег.\n\n"
-               "Шорты зарабатывают именно в падающем рынке: 2022 (%s), 2024 (%s), "
-               "2025 (%s), 2026 (%s). В годы роста рынка они слегка ослабляют "
-               "результат (2019: %s), что является платой за страховку от "
-               "медвежьих лет.\n\n**Итог: %s из %s лет в плюсе, все %s бумаг "
-               "прибыльны.**" % (y2022, y2024, y2025, y2026, y2019,
-                                 years_pos, n_years, n40))
+               "В годы падения индекса (%s) вклад сторон по пулу: %s. В годы роста "
+               "(%s): %s.\n\n**Итог: %s из %s лет в плюсе, %s из %s бумаг "
+               "прибыльны.**" % (_yl(bear), _side_line(bear), _yl(bull),
+                                 _side_line(bull), years_pos, n_years,
+                                 names_pos, n40))
 
     head_rows = [
         ("Совокупный результат OOS",
@@ -766,8 +907,6 @@ def build_reports(res, risk_df, lev_df, ye, bn, st40, lss, trades40, years):
         ("Положительных лет", "**%s/%s**" % (_fnum(years_pos), _fnum(n_years))),
     ]
 
-    sh = lss[lss["direction"] == "short"].iloc[0] if len(lss) else None
-    lg = lss[lss["direction"] == "long"].iloc[0] if len(lss) else None
     ss = lss["n"].sum()
     sp = lss.loc[lss["direction"] == "short", "total"].sum()
     lp = lss.loc[lss["direction"] == "long", "total"].sum()
@@ -805,7 +944,8 @@ def build_reports(res, risk_df, lev_df, ye, bn, st40, lss, trades40, years):
     year_rows = []
     for t in ye.to_dict("records"):
         year_rows.append([
-            str(t["year"]), _rub(t["pnl_RUB"]), _pct(t["pnl_pct"]),
+            "%s%s" % (t["year"], "*" if t.get("partial") else ""),
+            _rub(t["pnl_RUB"]), _pct(t["pnl_pct"]),
             _snum(t["IMOEX_pct"], 1) if t["IMOEX_pct"] == t["IMOEX_pct"] else "—",
             _fnum(t["trades"]), _fnum(t["win_pct"], 1),
             _snum(t["avg_trade"])])
@@ -864,9 +1004,10 @@ def build_reports(res, risk_df, lev_df, ye, bn, st40, lss, trades40, years):
     md.append(_md_table(["Метрика", "**Лонги + шорты (лев 1)**"],
                         [[a, b] for a, b in port_rows]))
     md.append("")
-    md.append("Обе стороны сделок самодостаточно прибыльны (PF 1,39–1,41) — "
-              "двустороннее нотиональное использование капитала: шорт кредитует "
-              "счёт так, что номинал позиции не превышает денег.")
+    md.append("PF: шорты %s, лонги %s. Шорт кредитует счёт так, что номинал "
+              "позиции не превышает денег. Учтите §9: дивидендные гэпы не "
+              "смоделированы и смещают эту разбивку в пользу шортов."
+              % (_fnum(sh["pf"], 2), _fnum(lg["pf"], 2)))
     md.append("")
     md.append("![Кривая средств](images/equity_pooled.png)")
     md.append("")
@@ -880,9 +1021,8 @@ def build_reports(res, risk_df, lev_df, ye, bn, st40, lss, trades40, years):
     md.append("")
     md.append(_md_table(["", "**Шорты**", "**Лонги**"], ls_rows))
     md.append("")
-    md.append("Обе стороны стабильно прибыльны. Шорты дают чуть больше половины "
-              "итога и, главное, **страхуют портфель в медвежьи годы** — именно "
-              "они обеспечили +40% в 2022-м и +36% за 2026-й.")
+    md.append("Разбивка по годам — в `tables/long_short_by_year.csv`. В годы "
+              "падения индекса стороны дали: %s." % _side_line(bear))
     md.append("")
     md.append("![Распределение PnL: лонги vs шорты](images/pnl_histogram.png)")
     md.append("")
@@ -921,9 +1061,14 @@ def build_reports(res, risk_df, lev_df, ye, bn, st40, lss, trades40, years):
     md.append(_md_table(["Год", "PnL, ₽", "% (пул 4,0 млн)", "IMOEX, %",
                          "Сделок", "Win, %", "Средняя"], year_rows))
     md.append("")
-    md.append("Единственный отрицательный год — 2018 (%s). В годы падения индекса "
-              "(2022, 2024, 2025, 2026) стратегия показывает положительные "
-              "результаты именно за счёт шортов." % _pct(yd[2018]["pnl_pct"]))
+    md.append("Отрицательные годы: %s. В годы падения индекса (%s) результат "
+              "стратегии по пулу: %s. Годы, помеченные *, покрыты OOS-окном "
+              "не полностью — их процент относится к части года, а не к году "
+              "целиком."
+              % (", ".join("%d (%s)" % (y, _pct(yd[y]["pnl_pct"])) for y in neg)
+                 or "нет",
+                 _yl(bear),
+                 "; ".join("%d %s" % (y, _pct(yd[y]["pnl_pct"])) for y in bear)))
     md.append("")
     md.append("![По годам vs IMOEX](images/returns_by_year.png)")
     md.append("")
@@ -939,10 +1084,12 @@ def build_reports(res, risk_df, lev_df, ye, bn, st40, lss, trades40, years):
     md.append("")
     md.append("## 10. Вывод")
     md.append("")
-    md.append("**Удваивает капитал в медвежьи годы** (2022, 2024, 2025, 2026 — "
-              "«жирные» годы именно благодаря шортам): %s из %s лет в плюсе. "
-              "Обе стороны сделок самодостаточно прибыльны (PF 1,39–1,41), все %s "
-              "бумаг в плюсе." % (years_pos, n_years, n40))
+    md.append("Лучший год — %d (%s), худший — %d (%s); %s из %s лет в плюсе, "
+              "%s из %s бумаг в плюсе. PF по шортам %s, по лонгам %s."
+              % (best_y[0], _pct(best_y[1]["pnl_pct"]),
+                 worst_y[0], _pct(worst_y[1]["pnl_pct"]),
+                 years_pos, n_years, names_pos, n40,
+                 _fnum(sh["pf"], 2), _fnum(lg["pf"], 2)))
     md.append("")
     md.append("Шорты исполняются фьючерсами на соответствующую бумагу (без платы "
               "за заём и ночной перенос, см. §9 п.5), поэтому главная из "
@@ -1051,9 +1198,10 @@ def build_reports(res, risk_df, lev_df, ye, bn, st40, lss, trades40, years):
     h.append("<h2>4. Портфель в цифрах (лонги+шорты, без плеча)</h2>")
     h.append(_html_table(["Метрика", "**Лонги + шорты (лев 1)**"],
                          [[a, b] for a, b in port_rows]))
-    h.append("<p>Обе стороны сделок самодостаточно прибыльны (PF 1,39–1,41) — "
-             "двустороннее нотиональное использование капитала: шорт кредитует "
-             "счёт так, что номинал позиции не превышает денег.</p>")
+    h.append("<p>PF: шорты %s, лонги %s. Шорт кредитует счёт так, что номинал "
+             "позиции не превышает денег. Учтите §9: дивидендные гэпы не "
+             "смоделированы и смещают эту разбивку в пользу шортов.</p>"
+             % (_fnum(sh["pf"], 2), _fnum(lg["pf"], 2)))
     h.append("")
     h.append('<img class="normal" src="images/equity_pooled.png" alt="Кривая средств">')
     h.append('<img class="normal" src="images/equity_pername.png" '
@@ -1065,10 +1213,8 @@ def build_reports(res, risk_df, lev_df, ye, bn, st40, lss, trades40, years):
     h.append("")
     h.append("<h2>5. Лонги vs шорты: кто зарабатывает</h2>")
     h.append(_html_table(["", "**Шорты**", "**Лонги**"], ls_rows))
-    h.append("<p>Обе стороны стабильно прибыльны. Шорты дают чуть больше "
-             "половины итога и, главное, <strong>страхуют портфель в медвежьи "
-             "годы</strong> — именно они обеспечили +40% в 2022-м и +36% за "
-             "2026-й.</p>")
+    h.append("<p>Разбивка по годам — в <code>tables/long_short_by_year.csv</code>. "
+             "В годы падения индекса стороны дали: %s.</p>" % _html_inline(_side_line(bear)))
     h.append("")
     h.append('<img class="normal" src="images/pnl_histogram.png" '
              'alt="Распределение PnL: лонги vs шорты">')
@@ -1105,10 +1251,13 @@ def build_reports(res, risk_df, lev_df, ye, bn, st40, lss, trades40, years):
     h.append("<h2>8. Доходность по годам</h2>")
     h.append(_html_table(["Год", "PnL, ₽", "% (пул 4,0 млн)", "IMOEX, %",
                           "Сделок", "Win, %", "Средняя"], year_rows))
-    h.append("<p>Единственный отрицательный год — 2018 (%s). В годы падения "
-             "индекса (2022, 2024, 2025, 2026) стратегия показывает "
-             "положительные результаты именно за счёт шортов.</p>"
-             % _pct(yd[2018]["pnl_pct"]))
+    h.append("<p>Отрицательные годы: %s. В годы падения индекса (%s) результат "
+             "стратегии по пулу: %s. Годы, помеченные *, покрыты OOS-окном не "
+             "полностью — их процент относится к части года, а не к году целиком.</p>"
+             % (", ".join("%d (%s)" % (y, _pct(yd[y]["pnl_pct"])) for y in neg)
+                or "нет",
+                _yl(bear),
+                "; ".join("%d %s" % (y, _pct(yd[y]["pnl_pct"])) for y in bear)))
     h.append("")
     h.append('<img class="normal" src="images/returns_by_year.png" '
              'alt="По годам vs IMOEX">')
@@ -1123,10 +1272,12 @@ def build_reports(res, risk_df, lev_df, ye, bn, st40, lss, trades40, years):
     h.append("<hr>")
     h.append("")
     h.append("<h2>10. Вывод</h2>")
-    h.append(("<p><strong>Удваивает капитал в медвежьи годы</strong> (2022, 2024, "
-              "2025, 2026 — «жирные» годы именно благодаря шортам): %s из %s лет "
-              "в плюсе. Обе стороны сделок самодостаточно прибыльны (PF 1,39–1,41), "
-              "все %s бумаг в плюсе.</p>" % (years_pos, n_years, n40)))
+    h.append("<p>Лучший год — %d (%s), худший — %d (%s); %s из %s лет в плюсе, "
+             "%s из %s бумаг в плюсе. PF по шортам %s, по лонгам %s.</p>"
+             % (best_y[0], _pct(best_y[1]["pnl_pct"]),
+                worst_y[0], _pct(worst_y[1]["pnl_pct"]),
+                years_pos, n_years, names_pos, n40,
+                _fnum(sh["pf"], 2), _fnum(lg["pf"], 2)))
     h.append("<p>Шорты исполняются фьючерсами на соответствующую бумагу (без "
              "платы за заём и ночной перенос, см. §9 п.5), поэтому главная из "
              "несмоделированных издержек — плата за заёмный шорт — на уровне "
@@ -1247,7 +1398,9 @@ def save_tables(res, trades40, years, tr25):
     lev_df.to_csv(TBL / "leverage_scan.csv", index=False, float_format="%.2f")
 
     ye = pct_year(trades40, n40)
-    ye["IMOEX_pct"] = ye["year"].map(moex_year_returns())
+    # benchmark measured over the same window the strategy is measured on
+    ye["IMOEX_pct"] = ye["year"].map(
+        moex_year_returns(pd.to_datetime(trades40["exit_time"]).min()))
     ye.to_csv(TBL / "by_year.csv", index=False, float_format="%.2f")
 
     bn = by_name(trades40)
@@ -1271,6 +1424,9 @@ def save_tables(res, trades40, years, tr25):
     lss["share_n_pct"] = lss["n"] / len(trades40) * 100
     lss.to_csv(TBL / "long_short_split.csv", index=False, float_format="%.2f")
 
+    lsy = ls_by_year(trades40, n40)
+    lsy.to_csv(TBL / "long_short_by_year.csv", index=False, float_format="%.2f")
+
     if tr25 is not None and len(tr25):
         ye25 = pct_year(tr25, 25)
         mm = ye[["year", "pnl_RUB"]].rename(columns={"pnl_RUB": "pnl_40"})
@@ -1282,10 +1438,14 @@ def save_tables(res, trades40, years, tr25):
     _daily_pnl(trades40).rename("pnl").to_csv(
         TBL / "equity_pooled_pnl.csv", float_format="%.0f")
 
-    return risk_df, lev_df, ye, bn, st40, lss
+    return risk_df, lev_df, ye, bn, st40, lss, lsy
 
 
 def main():
+    global USE_CACHE
+    if "--no-cache" in sys.argv[1:]:
+        USE_CACHE = False
+        print("cache disabled: every walk-forward is recomputed")
     IMG.mkdir(parents=True, exist_ok=True)
     TBL.mkdir(parents=True, exist_ok=True)
     style()
@@ -1303,10 +1463,14 @@ def main():
     trades40 = res[("risk", 10, 1)][1]
     tr25 = get(10, 1, ORIG)["trades"]
     nbits = max(v[2] for v in res.values())
-    years = (nbits - 504 - 126) / 252.0
+    # OOS coverage = every fold that actually ran, i.e. floor((n - train)/oos)
+    # windows of oos_days each. The old formula subtracted one extra oos window
+    # and shortened the denominator by half a year (22.1%/yr instead of 21.2%).
+    n_folds = max(0, (nbits - TRAIN_BARS) // OOS_BARS)
+    years = n_folds * OOS_BARS / BARS_PER_YEAR
 
     print("tabulating ...")
-    risk_df, lev_df, ye, bn, st40, lss = save_tables(
+    risk_df, lev_df, ye, bn, st40, lss, lsy = save_tables(
         res, trades40, years, tr25)
     print("charting ...")
     chart_pooled(trades40, len(BASKET40), 10)
@@ -1320,7 +1484,7 @@ def main():
     chart_risk_return(risk_df)
     chart_leverage(lev_df)
     print("writing report.md / report.html ...")
-    build_reports(res, risk_df, lev_df, ye, bn, st40, lss, trades40, years)
+    build_reports(res, risk_df, lev_df, ye, bn, st40, lss, lsy, trades40, years)
     print("done ->", OUT)
 
 

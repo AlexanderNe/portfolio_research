@@ -8,7 +8,7 @@ not to any one report variant.
 from pathlib import Path
 import pandas as pd
 
-DATA = "data/candles_ru_daily"
+DATA = str(Path(__file__).resolve().parent / "data" / "candles_ru_daily")
 
 NEW = ["MOEX", "SIBN", "MAGN", "PIKK", "SMLT", "MRKC", "VKCO", "HYDR",
        "TGKA", "SNGS", "OGKB", "KMAZ", "MVID", "RTKMP", "BSPB"]
@@ -21,12 +21,20 @@ ORIG = ["AFLT", "ALRS", "CBOM", "CHMF", "FEES", "GAZP", "GMKN", "IMOEX",
 BASKET40 = sorted(set(ORIG) | set(NEW))
 
 
-def moex_year_returns():
+def moex_year_returns(start=None):
+    """IMOEX price return per calendar year from `start` onwards.
+
+    `start` should be the first day the strategy is actually measured on, so the
+    benchmark covers the same window; it used to be a hardcoded date unrelated to
+    the walk-forward schedule.
+    """
     df = pd.read_csv("%s/IMOEX.csv" % DATA)
     df["timestamp"] = pd.to_datetime(df["timestamp"])
     df = df.sort_values("timestamp").reset_index(drop=True)
-    start = pd.Timestamp("2017-06-09")
+    start = pd.Timestamp(start) if start is not None else df["timestamp"].iloc[0]
     df = df[df["timestamp"] >= start].reset_index(drop=True)
+    if df.empty:
+        return {}
     out = {}
     for y in sorted(set(df["timestamp"].dt.year)):
         sub = df[df["timestamp"].dt.year == y]
