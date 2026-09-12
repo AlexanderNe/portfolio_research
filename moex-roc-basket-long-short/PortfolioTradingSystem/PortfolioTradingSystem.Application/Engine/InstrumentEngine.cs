@@ -23,7 +23,7 @@ public sealed class InstrumentEngine : IAsyncDisposable
     private readonly ITelegramGateway _telegram;
     private readonly IPositionRepository _positions;
     private readonly ITradeLogRepository _tradeLogs;
-    private readonly ISignalLogRepository _signalLogs;
+    private readonly ITradeJournal _journal;
     private readonly IMetricsStore _metrics;
     private readonly TelegramMessageFormatter _formatter;
     private readonly ILogger<InstrumentEngine> _logger;
@@ -55,7 +55,7 @@ public sealed class InstrumentEngine : IAsyncDisposable
         ITelegramGateway telegram,
         IPositionRepository positions,
         ITradeLogRepository tradeLogs,
-        ISignalLogRepository signalLogs,
+        ITradeJournal journal,
         IMetricsStore metrics,
         TelegramMessageFormatter formatter,
         IOptions<EngineOptions> engineOptions,
@@ -69,7 +69,7 @@ public sealed class InstrumentEngine : IAsyncDisposable
         _telegram = telegram;
         _positions = positions;
         _tradeLogs = tradeLogs;
-        _signalLogs = signalLogs;
+        _journal = journal;
         _metrics = metrics;
         _formatter = formatter;
         _logger = logger;
@@ -453,12 +453,11 @@ public sealed class InstrumentEngine : IAsyncDisposable
 
         if (opened is not null)
         {
-            await _positions.SaveAsync(opened, ct).ConfigureAwait(false);
             var e = new TradeOpenedEvent(
                 opened.Ticker, opened.Direction, opened.Units,
                 opened.EntryPrice, opened.StopLoss, opened.TakeProfit,
                 opened.AtrAtEntry, opened.EntryTime);
-            await PublishOpenedAsync(e, ct).ConfigureAwait(false);
+            await PublishOpenedAsync(opened, e, ct).ConfigureAwait(false);
         }
 
         if (closed is not null)
@@ -511,9 +510,11 @@ public sealed class InstrumentEngine : IAsyncDisposable
         m.PositionPnlPercent = pnl?.Percent;
     }
 
-    private async Task PublishOpenedAsync(TradeOpenedEvent e, CancellationToken ct)
+    private async Task PublishOpenedAsync(OpenPosition position, TradeOpenedEvent e, CancellationToken ct)
     {
-        await _signalLogs.AddAsync(new SignalLogEntry
+        // position + signal in one transaction: a crash between them used to leave
+        // an advised entry with no position behind it.
+        await _journal.RecordOpenAsync(position, new SignalLogEntry
         {
             InstrumentId = InstrumentId,
             Ticker = e.Ticker,
@@ -541,36 +542,39 @@ public sealed class InstrumentEngine : IAsyncDisposable
 
     private async Task PublishClosedAsync(TradeClosedEvent e, CancellationToken ct)
     {
-        await _signalLogs.AddAsync(new SignalLogEntry
-        {
-            InstrumentId = InstrumentId,
-            Ticker = e.Ticker,
-            Type = SignalType.PositionClosed,
-            Direction = e.Direction,
-            Price = e.ExitPrice,
-            ExitPrice = e.ExitPrice,
-            ExitReason = e.Reason,
-            PnlPercent = e.ReturnPercent,
-            Timestamp = e.ExitTime,
-        }, ct).ConfigureAwait(false);
-
-        await _tradeLogs.AddAsync(new TradeLogEntry
-        {
-            InstrumentId = InstrumentId,
-            Ticker = e.Ticker,
-            Direction = e.Direction,
-            Units = e.Units,
-            EntryPrice = e.EntryPrice,
-            ExitPrice = e.ExitPrice,
-            PnlRub = e.PnlRub,
-            ReturnPercent = e.ReturnPercent,
-            ExitReason = e.Reason,
-            Commission = e.Commission,
-            EntryTime = e.EntryTime,
-            ExitTime = e.ExitTime,
-        }, ct).ConfigureAwait(false);
-
-        await _positions.DeleteAsync(InstrumentId, ct).ConfigureAwait(false);
+        // trade log + signal log + position delete in one transaction: applied
+        // separately, a crash in the middle made the restored cash wrong (the
+        // trade counted AND the position restored).
+        await _journal.RecordCloseAsync(
+            InstrumentId,
+            new TradeLogEntry
+            {
+                InstrumentId = InstrumentId,
+                Ticker = e.Ticker,
+                Direction = e.Direction,
+                Units = e.Units,
+                EntryPrice = e.EntryPrice,
+                ExitPrice = e.ExitPrice,
+                PnlRub = e.PnlRub,
+                ReturnPercent = e.ReturnPercent,
+                ExitReason = e.Reason,
+                Commission = e.Commission,
+                EntryTime = e.EntryTime,
+                ExitTime = e.ExitTime,
+            },
+            new SignalLogEntry
+            {
+                InstrumentId = InstrumentId,
+                Ticker = e.Ticker,
+                Type = SignalType.PositionClosed,
+                Direction = e.Direction,
+                Price = e.ExitPrice,
+                ExitPrice = e.ExitPrice,
+                ExitReason = e.Reason,
+                PnlPercent = e.ReturnPercent,
+                Timestamp = e.ExitTime,
+            },
+            ct).ConfigureAwait(false);
 
         try
         {

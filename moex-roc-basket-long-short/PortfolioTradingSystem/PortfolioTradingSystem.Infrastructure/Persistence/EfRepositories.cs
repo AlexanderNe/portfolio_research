@@ -42,9 +42,10 @@ public sealed class EfInstrumentRepository : IInstrumentRepository
 
     public async Task<Instrument?> FindByTickerAsync(string ticker, CancellationToken ct)
     {
+        string normalized = (ticker ?? string.Empty).Trim().ToUpperInvariant();
         await using var db = await _factory.CreateDbContextAsync(ct).ConfigureAwait(false);
         return await db.Instruments.AsNoTracking()
-            .FirstOrDefaultAsync(x => x.Ticker == ticker.ToUpperInvariant(), ct).ConfigureAwait(false);
+            .FirstOrDefaultAsync(x => x.Ticker == normalized, ct).ConfigureAwait(false);
     }
 
     public async Task AddAsync(Instrument instrument, CancellationToken ct)
@@ -71,8 +72,16 @@ public sealed class EfInstrumentRepository : IInstrumentRepository
             return false;
         }
 
+        // Deleting only the instrument row left its positions, trades and signals
+        // behind: the orphaned PnL stayed in the pooled equity and the signal log
+        // for ever, attributed to an instrument that no longer exists.
+        await using var tx = await db.Database.BeginTransactionAsync(ct).ConfigureAwait(false);
+        await db.OpenPositions.Where(x => x.InstrumentId == id).ExecuteDeleteAsync(ct).ConfigureAwait(false);
+        await db.TradeLogs.Where(x => x.InstrumentId == id).ExecuteDeleteAsync(ct).ConfigureAwait(false);
+        await db.SignalLogs.Where(x => x.InstrumentId == id).ExecuteDeleteAsync(ct).ConfigureAwait(false);
         db.Instruments.Remove(entity);
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        await tx.CommitAsync(ct).ConfigureAwait(false);
         return true;
     }
 
@@ -188,6 +197,57 @@ public sealed class EfTradeLogRepository : ITradeLogRepository
     }
 }
 
+/// <summary>
+/// Multi-table writes the engine must be able to replay after a crash, done in
+/// one context and one transaction. See <see cref="ITradeJournal"/>.
+/// </summary>
+public sealed class EfTradeJournal : ITradeJournal
+{
+    private readonly IDbContextFactory<AppDbContext> _factory;
+
+    public EfTradeJournal(IDbContextFactory<AppDbContext> factory)
+    {
+        _factory = factory;
+    }
+
+    public async Task RecordOpenAsync(OpenPosition position, SignalLogEntry signal, CancellationToken ct)
+    {
+        await using var db = await _factory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        await using var tx = await db.Database.BeginTransactionAsync(ct).ConfigureAwait(false);
+        var existing = await db.OpenPositions
+            .FirstOrDefaultAsync(x => x.InstrumentId == position.InstrumentId, ct).ConfigureAwait(false);
+        if (existing is null)
+        {
+            await db.OpenPositions.AddAsync(position, ct).ConfigureAwait(false);
+        }
+        else
+        {
+            db.Entry(existing).CurrentValues.SetValues(position);
+        }
+
+        await db.SignalLogs.AddAsync(signal, ct).ConfigureAwait(false);
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        await tx.CommitAsync(ct).ConfigureAwait(false);
+    }
+
+    public async Task RecordCloseAsync(Guid instrumentId, TradeLogEntry trade, SignalLogEntry signal, CancellationToken ct)
+    {
+        await using var db = await _factory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        await using var tx = await db.Database.BeginTransactionAsync(ct).ConfigureAwait(false);
+        var position = await db.OpenPositions
+            .FirstOrDefaultAsync(x => x.InstrumentId == instrumentId, ct).ConfigureAwait(false);
+        if (position is not null)
+        {
+            db.OpenPositions.Remove(position);
+        }
+
+        await db.TradeLogs.AddAsync(trade, ct).ConfigureAwait(false);
+        await db.SignalLogs.AddAsync(signal, ct).ConfigureAwait(false);
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        await tx.CommitAsync(ct).ConfigureAwait(false);
+    }
+}
+
 public sealed class EfSignalLogRepository : ISignalLogRepository
 {
     private readonly IDbContextFactory<AppDbContext> _factory;
@@ -242,7 +302,10 @@ public sealed class EfSignalLogRepository : ISignalLogRepository
 
         int total = await query.CountAsync(ct).ConfigureAwait(false);
         var items = await query
+            // Id breaks ties: ordering by Timestamp alone makes paging unstable
+            // when several signals share a timestamp (rows repeat or vanish).
             .OrderByDescending(x => x.Timestamp)
+            .ThenByDescending(x => x.Id)
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
             .ToListAsync(ct).ConfigureAwait(false);

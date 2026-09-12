@@ -30,6 +30,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IPositionRepository, EfPositionRepository>();
         services.AddSingleton<ITradeLogRepository, EfTradeLogRepository>();
         services.AddSingleton<ISignalLogRepository, EfSignalLogRepository>();
+        services.AddSingleton<ITradeJournal, EfTradeJournal>();
 
         services.AddSingleton<IDbInitializer, DbInitializer>();
         return services;
