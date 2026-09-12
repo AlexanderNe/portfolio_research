@@ -49,8 +49,10 @@ public class EntryAndSizingTests
 
         var p = st.TryOpen(100m, T0.AddMinutes(1));
         Assert.NotNull(p);
-        // slDist = max(0.1*9, 100e-6) = 0.9 -> floor(10000/0.9) = 11111, capped at 1000
-        Assert.Equal(1000, p!.Units);
+        // slDist = max(0.1*9, 100e-6) = 0.9 -> floor(10000/0.9) = 11111, capped by
+        // floor(100000 / (100 * 1.0004)) = 999: the cap leaves room for the opening
+        // commission, which is paid out of the same cash.
+        Assert.Equal(999, p!.Units);
     }
 
     [Fact]

@@ -54,24 +54,27 @@ public sealed record EngineStateSnapshot(
 ///  * SL is checked before TP when both are hit within one bar (conservative).
 ///  * At most one open position; sizing = risk% cash / sl-dist, capped by leverage.
 ///  * Commission applied on both sides of a trade; cash mechanics match the simulator.
-/// Live refinement (documented deviation): intraday SL/TP are also checked against
-/// each 1-minute candle after the entry candle; the research only checks them on
-/// subsequent daily bars. This makes same-day exits possible but is strictly more
-/// risk-reducing and does not change the entry logic.
+/// Documented deviation from the research: intraday SL/TP are also checked
+/// against each 1-minute candle after the entry candle, while the research only
+/// checks them on subsequent daily bars. This is NOT merely "more conservative" -
+/// it exits winners at the target earlier as well, so the live trade distribution
+/// differs from the backtest by an amount that has not been measured.
 /// </summary>
 public sealed class MomentumEngineState
 {
     private readonly StrategyOptions _o;
     private readonly string _ticker;
+    private readonly int _lotSize;
     private readonly double _alpha;
     private readonly LinkedList<decimal> _closes = new();
     private decimal? _prevClose;
     private bool _firstBar = true;
 
-    public MomentumEngineState(StrategyOptions options, string ticker)
+    public MomentumEngineState(StrategyOptions options, string ticker, int lotSize = 1)
     {
         _o = options ?? throw new ArgumentNullException(nameof(options));
         _ticker = ticker;
+        _lotSize = lotSize > 0 ? lotSize : 1;
         _alpha = 1.0 / options.AtrPeriod;
         Cash = options.InitialCapital;
     }
@@ -112,7 +115,13 @@ public sealed class MomentumEngineState
         }
     }
 
-    /// <summary>Finalize the completed session daily bar (updates ATR/ROC/signal).</summary>
+    /// <summary>
+    /// Finalize the completed session daily bar (updates ATR/ROC/signal).
+    /// A bar flagged <see cref="Candle.IsComplete"/> = false (the engine only
+    /// joined part-way through that session) still contributes its close to the
+    /// ROC window but is kept out of ATR, whose true range would be understated
+    /// by the missing part of the session.
+    /// </summary>
     public void FinalizeDay(Candle completedBar) => OnBarCompleted(completedBar);
 
     public EngineStateSnapshot GetSnapshot(decimal lastPrice) => new(
@@ -148,20 +157,31 @@ public sealed class MomentumEngineState
             return null;
         }
 
+        decimal notionalRub = open * _o.PointRub;
+        if (notionalRub <= 0)
+        {
+            PendingSignal = null;
+            return null;
+        }
+
+        decimal commissionRate = _o.CommissionPct / 100m;
         decimal atrAtEntry = Atr;
         decimal slDistRub = Math.Max(_o.SlAtr * atrAtEntry * _o.PointRub, open * _o.PointRub * (1e-6m));
         int units = (int)(_o.RiskPct / 100m * Cash / slDistRub);
-        decimal notionalRub = open * _o.PointRub;
-        int unitsCap = (int)(_o.Leverage * Cash / notionalRub);
+        // the opening commission comes out of the same cash, so the cap has to
+        // leave room for it or "notional <= cash" is breached by that commission.
+        int unitsCap = (int)(_o.Leverage * Cash / (notionalRub * (1m + commissionRate)));
         units = Math.Max(0, Math.Min(units, unitsCap));
+        // MOEX trades lots, not shares: a size that is not a whole number of lots
+        // cannot be filled as advised.
+        units -= units % _lotSize;
         if (units <= 0)
         {
             PendingSignal = null;
             return null;
         }
 
-        decimal commission = _o.CommissionPct / 100m;
-        decimal openCommission = units * open * commission;
+        decimal openCommission = units * open * commissionRate;
         decimal stopLoss, takeProfit;
         if (dir == 1)
         {
@@ -295,7 +315,11 @@ public sealed class MomentumEngineState
 
     private void OnBarCompleted(Candle bar)
     {
-        if (_firstBar)
+        if (!bar.IsComplete)
+        {
+            // Partial session: the close is real, the high/low/open are not.
+        }
+        else if (_firstBar)
         {
             // pandas EWM(adjust=False) seeds with the first true-range (high-low,
             // since there is no previous close yet).
@@ -320,6 +344,11 @@ public sealed class MomentumEngineState
         if (_closes.Count >= _o.RocBars + 1)
         {
             decimal older = _closes.First!.Value;
+            if (older == 0m)
+            {
+                return;
+            }
+
             RoC = bar.Close / older - 1m;
             if (RoC > _o.RocThreshold)
             {

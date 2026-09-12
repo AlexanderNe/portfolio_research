@@ -43,4 +43,11 @@ public sealed class StrategyOptions
     /// Shorts are executed through stock futures per the research.
     /// </summary>
     public bool ShortsEnabled { get; set; } = true;
+
+    /// <summary>
+    /// How long after the session open an entry may still be filled at that open.
+    /// The research enters at the session open; a fill quoted hours later is not
+    /// obtainable, so an engine that only joins mid-session waits for the next one.
+    /// </summary>
+    public int EntryWindowMinutes { get; set; } = 15;
 }
