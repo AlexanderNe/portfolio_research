@@ -220,10 +220,13 @@ public sealed class MomentumEngineState
     }
 
     /// <summary>
-    /// Check the position against an intraday candle range. SL checked before TP
-    /// (research convention). Exits at the SL/TP level, not at the candle extreme.
+    /// Check the position against a candle range. SL is checked before TP (research
+    /// convention) and the fill is the SL/TP level, not the candle extreme - except
+    /// when <paramref name="open"/> is supplied and the candle already opened beyond
+    /// the level, in which case the level was never available and the fill is the
+    /// open (stops gap through, targets gap into).
     /// </summary>
-    public TradeClosedEvent? CheckStop(decimal high, decimal low, DateTimeOffset time)
+    public TradeClosedEvent? CheckStop(decimal high, decimal low, DateTimeOffset time, decimal? open = null)
     {
         var p = Position;
         if (p is null)
@@ -237,12 +240,12 @@ public sealed class MomentumEngineState
         {
             if (low <= p.StopLoss)
             {
-                exit = p.StopLoss;
+                exit = open is { } o && o < p.StopLoss ? o : p.StopLoss;
                 reason = ExitReason.StopLoss;
             }
             else if (high >= p.TakeProfit)
             {
-                exit = p.TakeProfit;
+                exit = open is { } o2 && o2 > p.TakeProfit ? o2 : p.TakeProfit;
                 reason = ExitReason.TakeProfit;
             }
         }
@@ -250,12 +253,12 @@ public sealed class MomentumEngineState
         {
             if (high >= p.StopLoss)
             {
-                exit = p.StopLoss;
+                exit = open is { } o && o > p.StopLoss ? o : p.StopLoss;
                 reason = ExitReason.StopLoss;
             }
             else if (low <= p.TakeProfit)
             {
-                exit = p.TakeProfit;
+                exit = open is { } o2 && o2 < p.TakeProfit ? o2 : p.TakeProfit;
                 reason = ExitReason.TakeProfit;
             }
         }

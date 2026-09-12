@@ -457,7 +457,7 @@ public sealed class InstrumentEngine : IAsyncDisposable
             // not exited against its own range).
             if (positionExistedBeforeThisCandle)
             {
-                closed = _state.CheckStop(minute.High, minute.Low, minute.Time);
+                closed = _state.CheckStop(minute.High, minute.Low, minute.Time, minute.Open);
                 if (closed is not null)
                 {
                     _exitedThisSession = true;

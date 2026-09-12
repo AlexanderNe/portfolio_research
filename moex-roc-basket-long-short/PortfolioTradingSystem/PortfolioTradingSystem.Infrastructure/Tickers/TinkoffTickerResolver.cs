@@ -32,7 +32,7 @@ public sealed class TinkoffTickerResolver : ITickerResolver
 
     public async Task<TickerResolution> ResolveAsync(string ticker, CancellationToken ct)
     {
-string t = (ticker ?? string.Empty).Trim().ToUpperInvariant();
+        string t = (ticker ?? string.Empty).Trim().ToUpperInvariant();
         if (t.Length == 0)
         {
             return TickerResolution.NotFound("Ticker is empty.");
@@ -50,31 +50,31 @@ string t = (ticker ?? string.Empty).Trim().ToUpperInvariant();
                 new FindInstrumentRequest { Query = t, InstrumentKind = InstrumentType.Share },
                 new CallOptions(headers: _connection.Metadata, cancellationToken: ct)).ConfigureAwait(false);
         }
-catch (RpcException ex)
+        catch (RpcException ex)
         {
             _logger.LogError(ex, "FindInstrument RPC failed for ticker {Ticker}", t);
             return TickerResolution.NotFound("T-Invest lookup failed: " + ex.Status.Detail);
         }
 
-var matches = response.Instruments
-            .Where(i => i.InstrumentKind == InstrumentType.Share
-                        && string.Equals(i.Ticker, t, StringComparison.OrdinalIgnoreCase)
-                        && (_classCode.Length == 0
-                            || string.Equals(i.ClassCode, _classCode, StringComparison.OrdinalIgnoreCase)))
-            .Select(i => new ResolutionCandidate(
-                i.Uid,
-                i.Figi,
-                i.Isin,
-                i.Ticker,
-                i.ClassCode,
-                i.Name,
-                i.Lot,
-                i.ApiTradeAvailableFlag))
-            .DistinctBy(c => c.Uid)
-            .OrderBy(c => c.ClassCode)
-            .ToList();
+        var matches = response.Instruments
+                    .Where(i => i.InstrumentKind == InstrumentType.Share
+                                && string.Equals(i.Ticker, t, StringComparison.OrdinalIgnoreCase)
+                                && (_classCode.Length == 0
+                                    || string.Equals(i.ClassCode, _classCode, StringComparison.OrdinalIgnoreCase)))
+                    .Select(i => new ResolutionCandidate(
+                        i.Uid,
+                        i.Figi,
+                        i.Isin,
+                        i.Ticker,
+                        i.ClassCode,
+                        i.Name,
+                        i.Lot,
+                        i.ApiTradeAvailableFlag))
+                    .DistinctBy(c => c.Uid)
+                    .OrderBy(c => c.ClassCode)
+                    .ToList();
 
-if (matches.Count == 1)
+        if (matches.Count == 1)
         {
             _logger.LogInformation(
                 "Resolved ticker {Ticker} to uid={Uid} figi={Figi} class={ClassCode}",

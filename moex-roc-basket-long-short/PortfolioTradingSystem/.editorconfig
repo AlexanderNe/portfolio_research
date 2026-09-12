@@ -1,0 +1,13 @@
+root = true
+
+[*.cs]
+indent_style = space
+indent_size = 4
+charset = utf-8
+insert_final_newline = true
+
+[**/Enums.cs]
+# SignalDirection.Long / .Short are position directions, not the C# types long and
+# short. Renaming them would change the persisted enum names and the JSON contract
+# of the admin API for no benefit.
+dotnet_diagnostic.CA1720.severity = none

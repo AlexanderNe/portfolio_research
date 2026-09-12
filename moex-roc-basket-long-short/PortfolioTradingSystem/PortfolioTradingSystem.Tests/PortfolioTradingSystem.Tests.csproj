@@ -16,6 +16,11 @@
 
   <ItemGroup>
     <ProjectReference Include="..\PortfolioTradingSystem.Domain\PortfolioTradingSystem.Domain.csproj" />
+    <ProjectReference Include="..\PortfolioTradingSystem.Application\PortfolioTradingSystem.Application.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="Fixtures\*.csv" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>
