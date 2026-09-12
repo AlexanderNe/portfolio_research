@@ -84,7 +84,7 @@ passed via environment variables (`__` separates sections), not committed:
 | `Telegram__BotToken` | Bot token |
 | `Telegram__ChannelId` | e.g. `@channel` |
 | `Database__ConnectionString` | See section 2 |
-| `Admin__Username` / `Admin__Password` | Admin panel credentials (Basic Auth) |
+| `Admin__Username` / `Admin__Password` | Admin panel credentials (Basic Auth). **Required**: auth fails closed while the password is empty. |
 
 `appsettings.Production.json` only forces `SandboxMode: false`; it is loaded
 automatically when `ASPNETCORE_ENVIRONMENT=Production`.
@@ -110,14 +110,8 @@ User=dotnet-service
 Group=dotnet-service
 WorkingDirectory=/opt/portfolio-trading
 Environment=ASPNETCORE_ENVIRONMENT=Production
-Environment=ASPNETCORE_URLS=http://0.0.0.0:5080
-Environment=Database__ConnectionString=Host=localhost;Port=5432;Database=portfolio_trading;Username=trading;Password=<strong-password>
-Environment=Tinkoff__AccessToken=<token>
-Environment=Telegram__Enabled=true
-Environment=Telegram__BotToken=<token>
-Environment=Telegram__ChannelId=@channel
-Environment=Admin__Username=admin
-Environment=Admin__Password=<admin-password>
+Environment=ASPNETCORE_URLS=http://127.0.0.1:5080
+EnvironmentFile=/etc/portfolio-trading.env
 ExecStart=/opt/portfolio-trading/PortfolioTradingSystem.Api
 Restart=on-failure
 RestartSec=5
@@ -129,6 +123,22 @@ ReadWritePaths=/opt/portfolio-trading/logs
 
 [Install]
 WantedBy=multi-user.target
+```
+
+Secrets go in `/etc/portfolio-trading.env` — **not** in `Environment=` lines, which
+any local user can read with `systemctl show`:
+
+```bash
+sudo install -m 0600 /dev/null /etc/portfolio-trading.env
+sudo tee /etc/portfolio-trading.env >/dev/null <<'EOF'
+Database__ConnectionString=Host=localhost;Port=5432;Database=portfolio_trading;Username=trading;Password=<strong-password>
+Tinkoff__AccessToken=<token>
+Telegram__Enabled=true
+Telegram__BotToken=<token>
+Telegram__ChannelId=@channel
+Admin__Username=admin
+Admin__Password=<admin-password>
+EOF
 ```
 
 ## 7. Start and verify
@@ -146,17 +156,20 @@ First start creates the schema and seeds the 39 research-basket tickers (all
 
 ## 8. Exposure
 
-The admin UI is protected only by HTTP Basic Auth — do not expose it raw to the
-internet:
+The admin UI is protected only by HTTP Basic Auth over plain HTTP, so the
+credentials travel in clear text. **Do not open port 5080 to the internet.** Bind
+the app to localhost and terminate TLS in nginx:
+
+The unit file above already binds loopback only.
 
 ```bash
 sudo ufw allow 22/tcp
-sudo ufw allow 5080/tcp
-sudo ufw enable
+sudo ufw allow 443/tcp
+sudo ufw enable        # 5080 stays closed; nginx proxies to it over loopback
 ```
 
-For HTTPS, put nginx in front and bind the app to localhost only
-(`ASPNETCORE_URLS=http://127.0.0.1:5080`).
+The app logs a warning at startup when it binds `0.0.0.0` over plain HTTP, and an
+error when `Admin:Password` is unset (in which case every request is rejected).
 
 ## Operations notes
 
@@ -167,4 +180,9 @@ For HTTPS, put nginx in front and bind the app to localhost only
   show timestamps on a non-trading Sunday. Prefer `Pause`/`Resume` over process
   restarts where possible.
 - The DB uses `EnsureCreated`; model changes require recreating the database
-  (see README → Persistence).
+  (see README → Persistence). The UNIQUE index on `OpenPositions.InstrumentId`
+  is such a change: an existing database must be recreated.
+- A stopped engine is restarted automatically by the supervisor within
+  `Engine:RefreshInstrumentsIntervalSeconds`; a restart is logged as a warning
+  ("Engine X is no longer running"). Repeated warnings mean the instrument keeps
+  failing — check the error in the admin panel.

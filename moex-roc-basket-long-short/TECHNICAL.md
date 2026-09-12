@@ -1,7 +1,21 @@
-﻿# TECHNICAL.md - technical specification for `moex-roc-basket-long-short`
+# TECHNICAL.md - technical specification for `moex-roc-basket-long-short`
 
 This doc is for the next engineer/researcher (or agent): how to rebuild, verify,
 and not break this package. The user-facing overview is in `README.md`.
+
+> [!WARNING]
+> **The headline numbers below are stale and must not be quoted.**
+> They come from a simulator that allowed a bar which had just stopped a position
+> out to also open a new one *at that bar's open* - a fill that no longer exists by
+> the time the stop is hit. On SBER/GAZP/LKOH that was 69% of all trades and 77% of
+> the PnL. Fixing it, together with fold-boundary exits, an un-warmed fold-local ATR
+> and stops that assumed the level was always available, takes an 8-name walk-forward
+> from **+225% to +42%** over the same 9.5 years, and 3 of those 8 names turn
+> negative.
+>
+> The simulator is fixed on this branch; `report/` has **not** been rebuilt on it.
+> Rebuild with `python report_build.py --no-cache` before quoting anything here.
+> Full analysis: [`CODE_REVIEW.md`](CODE_REVIEW.md).
 
 ---
 
@@ -49,6 +63,29 @@ Reference only (leverage FORBIDDEN, shown to understand the ceiling): 2x
 
 ## 3. Parameters and mechanics
 
+### Execution model (fixed 2026-09-12 - do not revert)
+
+- A bar that produced an **exit** may **not** also produce an **entry**. The
+  position was still open at that bar's open, so filling a new one there is a
+  fill in the past. This was the single largest error in the package.
+- A position open at a **fold boundary** is handed to the next fold
+  (`cfg["carry_positions"]`, default on) instead of being force-closed at the
+  last close; the boundary is an artefact of slicing, not a trading rule. The
+  next fold still starts from the nominal capital, adjusted for the cash the
+  carried position already consumed.
+- The OOS simulator's **ATR is warmed** with pre-fold history exactly like the
+  signal. A fold-local EWM re-seeds on the fold's first bar and stays biased for
+  roughly `3*period` bars, which distorts both stop distance and sizing.
+- A bar that **opens beyond** a stop/target fills at the OPEN: stops gap through,
+  targets gap into.
+- The leverage cap leaves room for the **opening commission**, so
+  `notional <= cash` holds exactly.
+- Optional: `--lot` rounds size down to whole exchange lots, `--slippage` applies
+  adverse slippage to every fill. Both default to off/1 so they do not silently
+  change historical comparisons.
+- Parameter selection is **fee-aware by default** (`--fee-blind-selection`
+  restores the old gross selection).
+
 - `strat_roc_momentum(df, n, threshold)`: signal at the **close of bar i**:
   `ROC = close/close[i-n] - 1`; `ROC > +thr` -> +1, `ROC < -thr` -> -1, else 0.
   This package uses n=5, thr=0.01 (per-fold selection from the grid inside
@@ -69,7 +106,12 @@ Reference only (leverage FORBIDDEN, shown to understand the ceiling): 2x
   `atr[i-1]` - known at decision time; (2) pooled/per-name equity aggregation is
   ONLY via `_daily_pnl()` (groupby-SUM by exit date). A dict comprehension keyed
   on exit date silently overwrites same-day trades and understates the pool
-  (was a bug: 4.0->5.2M instead of 4.0->12.0M).
+  (was a bug: 4.0->5.2M instead of 4.0->12.0M); (3) pooled and per-name equity
+  are **mark-to-market** via `pooled_equity()` - summing realised PnL alone skips
+  the entire life of every open position and understated the pool drawdown by
+  roughly a third (-14.1% instead of -18.1% on an 8-name sample); (4) the OOS
+  span is `folds * oos_days / 252`, not `(n - train - oos)/252`, which dropped a
+  whole fold and inflated %/yr by 4.5% relative.
 
 ## 4. Data
 
@@ -93,9 +135,13 @@ python report_build.py   # from the root of this folder
 
 - Depends on `pandas/numpy/matplotlib` (see `requirements.txt`);
   `matplotlib.use("Agg")` is already set in the scripts.
-- Walk-forward runs are cached by (risk, lev, nameset) in
-  `report/tables/_cache/*.pkl` (6.2 MB, 13 files). A re-run reuses the cache;
-  deleting it forces a full recompute (~minutes).
+- Walk-forward runs are cached in `report/tables/_cache/*.pkl` under a key that
+  covers the config, the parameter grid, the walk-forward windows, the universe
+  AND a content hash of the source CSVs. Refreshing the bars or changing a
+  parameter therefore invalidates the cache instead of silently returning the
+  previous run (it did not, before 2026-09-12: "download fresh bars, then
+  rebuild" produced the old report). `python report_build.py --no-cache` forces a
+  full recompute.
 - Output: `report/images/*.png` (16: 8 general + 8 signal),
   `report/tables/*.csv` (8), HTML + MD.
 - **Signal charts** (`chart_signals`): candles, full history (from the first bar,
