@@ -10,19 +10,21 @@ Intervals: 1 (min), 10 (min), 60 (min), 24 (daily).
 
 Output CSV (same schema as strategy_research.py):
   timestamp (naive Moscow time), open, high, low, close, volume
+
+A download MERGES into the existing file (new bars win on a timestamp clash),
+so a short --days window tops the history up instead of truncating it.
 """
 
 import sys
 import time
-import warnings
 from datetime import date, timedelta
 from pathlib import Path
 
 import pandas as pd
 import requests
-from requests.packages.urllib3.exceptions import InsecureRequestWarning
 
-warnings.filterwarnings("ignore", category=InsecureRequestWarning)
+RETRIES = 4
+PAGE_PAUSE = 0.15
 
 STOCKS = [
     "SBER", "SBERP", "GAZP", "LKOH", "ROSN", "NVTK", "GMKN", "TATN",
@@ -34,65 +36,91 @@ INDEXES = ["IMOEX"]
 
 CANDLE_URL = (
     "https://iss.moex.com/iss/engines/{engine}/markets/{market}/"
-    "securities/{sec}/candles.json"
+    "{board}securities/{sec}/candles.json"
 )
 
 
-def fetch_candles(engine: str, market: str, sec: str, interval: int,
-                  start: date, till: date) -> list:
-    """Fetch all candle pages in [start, till] for the given interval.
+def _get_json(url: str, params: dict) -> dict:
+    """One ISS request with retries. Raises if it cannot be completed.
+
+    TLS verification stays ON: these candles are the input to trading
+    decisions, so a silently intercepted feed is not an acceptable trade-off.
+    """
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    last = None
+    for attempt in range(RETRIES):
+        try:
+            r = requests.get(url, params=params, headers=headers, timeout=60)
+            r.raise_for_status()
+            return r.json()
+        except requests.exceptions.RequestException as e:
+            last = e
+            if attempt < RETRIES - 1:
+                time.sleep(2 ** attempt)
+    raise RuntimeError(f"ISS request failed after {RETRIES} attempts: {last}")
+
+
+def fetch_candles(engine: str, market: str, board: str, sec: str, interval: int,
+                  start: date, till: date):
+    """Fetch all candle pages in [start, till]; returns (rows, columns).
 
     For fine intervals (1/10 min) the range is chunked into ~35-day slices so
     the per-page total stays well under the cap and failures are recoverable.
+    A chunk that cannot be completed raises instead of silently leaving a hole
+    in the history.
     """
     rows = []
+    columns = None
     chunk_days = 35 if interval <= 10 else 365
     c0 = start
+    url = CANDLE_URL.format(engine=engine, market=market, sec=sec,
+                            board=("boards/%s/" % board) if board else "")
     while c0 < till:
         c1 = min(c0 + timedelta(days=chunk_days), till)
         page_start = 0
         pages = 0
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-        url = CANDLE_URL.format(engine=engine, market=market, sec=sec)
         base = len(rows)
         while True:
             pages += 1
             if pages > 1000:
-                print("    too many pages, stopping")
-                break
-            params = {
+                raise RuntimeError(f"{sec}: more than 1000 pages for {c0}..{c1}")
+            j = _get_json(url, {
                 "interval": interval,
                 "from": c0.isoformat(),
                 "till": c1.isoformat(),
                 "start": page_start,
-            }
-            try:
-                r = requests.get(url, params=params, headers=headers,
-                                 timeout=60, verify=False)
-                r.raise_for_status()
-                j = r.json()
-            except requests.exceptions.RequestException as e:
-                print(f"    request error: {e}")
-                time.sleep(3)
+            })
+            candles = j.get("candles") or {}
+            if columns is None:
+                columns = candles.get("columns")
+            data = candles.get("data") or []
+            if not data:
                 break
-            data = ((j.get("candles") or {}).get("data") or [])
             rows.extend(data)
             page_start += len(data)
-            if len(data) < 500 or not data:
-                break
-            time.sleep(0.15)
-        if pages >= 1000:
-            break
+            time.sleep(PAGE_PAUSE)
         print(f"    {sec} {interval}m: chunk {c0}..{c1} done, "
               f"{len(rows) - base} rows ({len(rows)} total, {(c1 - start).days}/{ (till - start).days } days)",
               flush=True)
         c0 = c1
-    return rows
+    return rows, columns
 
 
-def candles_to_df(rows: list) -> pd.DataFrame:
-    df = pd.DataFrame(rows, columns=["open", "close", "high", "low",
-                                     "value", "volume", "begin", "end"])
+def candles_to_df(rows: list, columns) -> pd.DataFrame:
+    """Build the OHLCV frame using the column names ISS reported.
+
+    Reading columns positionally (the previous behaviour) silently swaps OHLC
+    if the endpoint ever reorders them.
+    """
+    if not rows:
+        return pd.DataFrame()
+    if not columns:
+        raise ValueError("ISS response carried no column names")
+    df = pd.DataFrame(rows, columns=columns)
+    required = {"open", "high", "low", "close", "volume", "begin"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"ISS candles are missing columns: {sorted(missing)}")
     if df.empty:
         return df
     df = df[["open", "high", "low", "close", "volume", "begin"]].rename(
@@ -105,13 +133,27 @@ def candles_to_df(rows: list) -> pd.DataFrame:
     return df[["timestamp", "open", "high", "low", "close", "volume"]]
 
 
-def fetch_one(engine: str, market: str, sec: str, interval: int,
+def fetch_one(engine: str, market: str, board: str, sec: str, interval: int,
               start: date, till: date):
-    rows = fetch_candles(engine, market, sec, interval, start, till)
-    df = candles_to_df(rows)
+    rows, columns = fetch_candles(engine, market, board, sec, interval, start, till)
+    df = candles_to_df(rows, columns)
     if not df.empty:
         df = df[(df["timestamp"].dt.date >= start) & (df["timestamp"].dt.date <= till)]
     return df
+
+
+def merge_history(path: Path, fresh: pd.DataFrame) -> pd.DataFrame:
+    """Merge a freshly downloaded window into the file already on disk.
+
+    The downloader used to overwrite the CSV with only what the request
+    returned, so `--days 365` silently destroyed years of accumulated history.
+    """
+    if path.exists():
+        old = pd.read_csv(path)
+        old["timestamp"] = pd.to_datetime(old["timestamp"])
+        fresh = pd.concat([old, fresh], ignore_index=True)
+    return (fresh.drop_duplicates(subset="timestamp", keep="last")
+                 .sort_values("timestamp").reset_index(drop=True))
 
 
 INTERVALS = {
@@ -170,7 +212,7 @@ def main():
             out_dir.mkdir(parents=True, exist_ok=True)
             tag = f"{interval}m" if interval < 60 else ("1h" if interval == 60 else "daily")
             try:
-                df = fetch_one(engine, market, sec, interval, start, till)
+                df = fetch_one(engine, market, board, sec, interval, start, till)
                 if df.empty:
                     print(f"[{sec}] no {tag} data")
                     continue
@@ -182,9 +224,12 @@ def main():
                     print(f"[{sec}] no {tag} data after session filter")
                     continue
                 path = out_dir / f"{sec}.csv"
+                before = len(pd.read_csv(path)) if path.exists() else 0
+                df = merge_history(path, df)
                 df.to_csv(path, index=False)
                 print(f"[{sec}] saved {len(df)} {tag} bars "
-                      f"({df['timestamp'].min()}..{df['timestamp'].max()}, "
+                      f"(+{len(df) - before} new, "
+                      f"{df['timestamp'].min()}..{df['timestamp'].max()}, "
                       f"{df['timestamp'].dt.date.nunique()} days)")
             except Exception as e:
                 print(f"[{sec}] ERROR ({tag}): {e}")
