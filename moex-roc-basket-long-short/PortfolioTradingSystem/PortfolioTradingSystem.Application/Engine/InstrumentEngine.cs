@@ -85,7 +85,13 @@ public sealed class InstrumentEngine : IAsyncDisposable
     public string Ticker => _instrument.Ticker;
 
     /// <summary>Effective T-Bank instrument identifier the engine subscribes to (UID preferred, FIGI fallback).</summary>
-    public string TinkoffInstrumentId => _instrument.Uid ?? _instrument.Figi ?? string.Empty;
+    public string TinkoffInstrumentId => EffectiveInstrumentId(_instrument);
+
+    /// <summary>UID, else FIGI, else empty - treating blank like missing.</summary>
+    public static string EffectiveInstrumentId(Instrument instrument) =>
+        !string.IsNullOrWhiteSpace(instrument.Uid) ? instrument.Uid!
+        : !string.IsNullOrWhiteSpace(instrument.Figi) ? instrument.Figi!
+        : string.Empty;
 
     public bool IsRunning => _runTask is not null && !_runTask.IsCompleted;
 
