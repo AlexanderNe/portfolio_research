@@ -354,6 +354,36 @@ public sealed class InstrumentEngine : IAsyncDisposable
             Ticker, bars.Count, lastBar, _state.RoC, _state.PendingSignal ?? 0, _state.Atr, _state.Cash, _state.IsWarmedUp);
     }
 
+    /// <summary>
+    /// Close the open position out of band (operator action from the admin panel).
+    /// Without this the engine and reality diverge permanently the moment an
+    /// operator flattens by hand, and only a database edit could reconcile them.
+    /// </summary>
+    public async Task<TradeClosedEvent?> ClosePositionAsync(decimal? price, CancellationToken ct)
+    {
+        TradeClosedEvent closed;
+        lock (_stateLock)
+        {
+            var position = _state.Position;
+            if (position is null)
+            {
+                return null;
+            }
+
+            decimal mark = price ?? _sessionBar?.Close ?? position.EntryPrice;
+            if (mark <= 0)
+            {
+                return null;
+            }
+
+            closed = _state.ClosePosition(mark, ExitReason.Manual, DateTimeOffset.UtcNow.ToMoscow());
+            _exitedThisSession = true;
+        }
+
+        await PublishClosedAsync(closed, ct).ConfigureAwait(false);
+        return closed;
+    }
+
     private async Task ProcessMinuteAsync(Candle minute, CancellationToken ct)
     {
         DateOnly mskDate = minute.Time.ToMoscowDate();

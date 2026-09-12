@@ -36,6 +36,8 @@ public sealed class TelegramGateway : ITelegramGateway
         }
     }
 
+    private const int Attempts = 3;
+
     public async Task SendMessageAsync(string text, CancellationToken ct)
     {
         if (!_enabled || _bot is null || _chatId is null)
@@ -43,13 +45,41 @@ public sealed class TelegramGateway : ITelegramGateway
             return;
         }
 
-        try
+        // An undelivered signal is a trade the operator never sees, so a single
+        // transient network blip should not be the end of it. Still swallowed at
+        // the end: the trade record is already committed either way.
+        for (int attempt = 1; attempt <= Attempts; attempt++)
         {
-            await _bot.SendMessage(new ChatId(_chatId), text, cancellationToken: ct).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Telegram send failed to chat {ChatId}", _chatId);
+            try
+            {
+                await _bot.SendMessage(new ChatId(_chatId), text, cancellationToken: ct).ConfigureAwait(false);
+                return;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception ex)
+            {
+                if (attempt == Attempts)
+                {
+                    _logger.LogError(
+                        ex, "Telegram send failed to chat {ChatId} after {Attempts} attempts; signal NOT delivered",
+                        _chatId, Attempts);
+                    return;
+                }
+
+                _logger.LogWarning(
+                    ex, "Telegram send attempt {Attempt}/{Attempts} failed; retrying", attempt, Attempts);
+                try
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(attempt), ct).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+            }
         }
     }
 }

@@ -31,14 +31,16 @@ public static class AdminEndpoints
             IOptions<StrategyOptions> strategyOptions,
             CancellationToken ct) =>
         {
+            // Rebuilt from an O(days x trades) double loop: for every day it
+            // re-summed every trade twice. It is now one pass over the trades plus
+            // one pass over the days. Dates are Moscow dates throughout - bar times
+            // arrive with the Moscow offset while trade times come back from
+            // Postgres in UTC, so .DateTime.Date silently mixed two calendars.
             var all = await instruments.GetAllAsync(ct).ConfigureAwait(false);
             var opt = strategyOptions.Value;
             decimal pool = all.Count * opt.InitialCapital;
             decimal commission = opt.CommissionPct / 100m;
             var allTrades = await tradeLogs.GetAllAsync(ct).ConfigureAwait(false);
-            var tradesByTicker = allTrades
-                .GroupBy(t => t.Ticker)
-                .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
 
             var openByTicker = new Dictionary<string, OpenPosition>(StringComparer.OrdinalIgnoreCase);
             foreach (var inst in all)
@@ -50,12 +52,13 @@ public static class AdminEndpoints
                 }
             }
 
-            var closeByDateByTicker = new Dictionary<string, SortedDictionary<DateTime, decimal>>(StringComparer.OrdinalIgnoreCase);
-            var timeByDay = new SortedDictionary<DateTime, DateTimeOffset>();
-            var daySet = new SortedSet<DateTime>();
+            var closeByDateByTicker = new Dictionary<string, Dictionary<DateOnly, decimal>>(StringComparer.OrdinalIgnoreCase);
+            var timeByDay = new Dictionary<DateOnly, DateTimeOffset>();
+            var daySet = new SortedSet<DateOnly>();
+
             void AddDay(DateTimeOffset time)
             {
-                var date = time.DateTime.Date;
+                var date = time.ToMoscowDate();
                 daySet.Add(date);
                 if (!timeByDay.ContainsKey(date))
                 {
@@ -77,11 +80,12 @@ public static class AdminEndpoints
 
                     bars = list;
                 }
-                else if (!string.IsNullOrWhiteSpace(inst.Uid ?? inst.Figi))
+                else if (InstrumentEngine.EffectiveInstrumentId(inst).Length > 0)
                 {
                     try
                     {
-                        bars = await history.GetDailyBarsAsync(inst.Uid ?? inst.Figi!, 700, ct).ConfigureAwait(false);
+                        bars = await history.GetDailyBarsAsync(
+                            InstrumentEngine.EffectiveInstrumentId(inst), 700, ct).ConfigureAwait(false);
                     }
                     catch
                     {
@@ -93,11 +97,11 @@ public static class AdminEndpoints
                     bars = Array.Empty<Candle>();
                 }
 
-                var byDate = new SortedDictionary<DateTime, decimal>();
+                var byDate = new Dictionary<DateOnly, decimal>();
                 foreach (var c in bars)
                 {
                     AddDay(c.Time);
-                    byDate[c.Time.DateTime.Date] = c.Close;
+                    byDate[c.Time.ToMoscowDate()] = c.Close;
                 }
 
                 if (byDate.Count == 0)
@@ -119,90 +123,93 @@ public static class AdminEndpoints
                 AddDay(open.EntryTime);
             }
 
-            decimal MarkToMarket(DateTime day, decimal close, int dir, decimal entryPrice, int units)
+            static decimal MarkToMarket(decimal close, int dir, decimal entryPrice, int units,
+                                        decimal pointRub, decimal commissionRate)
             {
-                decimal gross = (close - entryPrice) * units * dir * opt.PointRub;
-                decimal closeCommission = close * units * commission;
-                decimal openCommission = entryPrice * units * commission;
+                decimal gross = (close - entryPrice) * units * dir * pointRub;
+                decimal closeCommission = close * units * commissionRate;
+                decimal openCommission = entryPrice * units * commissionRate;
                 return gross - closeCommission - openCommission;
             }
 
-            decimal RealizedUpTo(DateTime day)
+            var days = daySet.ToList();
+            var dayIndex = new Dictionary<DateOnly, int>(days.Count);
+            for (int i = 0; i < days.Count; i++)
             {
-                decimal sum = 0m;
-                foreach (var t in allTrades)
-                {
-                    if (t.ExitTime.DateTime.Date < day)
-                    {
-                        sum += t.PnlRub;
-                    }
-                }
-
-                return sum;
+                dayIndex[days[i]] = i;
             }
 
-            decimal UnrealizedOn(DateTime day)
-            {
-                decimal sum = 0m;
-                foreach (var kvp in closeByDateByTicker)
-                {
-                    if (!kvp.Value.TryGetValue(day, out decimal close))
-                    {
-                        continue;
-                    }
+            // realized[i] = PnL of trades that closed strictly BEFORE days[i];
+            // a trade is marked to market on its exit day, realized from the next.
+            var realized = new decimal[days.Count + 1];
+            var unrealized = new decimal[days.Count + 1];
+            DateOnly? startDay = null;
 
-                    if (tradesByTicker.TryGetValue(kvp.Key, out var tickerTrades))
-                    {
-                        foreach (var t in tickerTrades)
-                        {
-                            var entryDay = t.EntryTime.DateTime.Date;
-                            var exitDay = t.ExitTime.DateTime.Date;
-                            if (entryDay <= day && day <= exitDay)
-                            {
-                                sum += MarkToMarket(day, close, (int)t.Direction, t.EntryPrice, t.Units);
-                            }
-                        }
-                    }
-
-                    if (openByTicker.TryGetValue(kvp.Key, out var op) && op.EntryTime.DateTime.Date <= day)
-                    {
-                        sum += MarkToMarket(day, close, (int)op.Direction, op.EntryPrice, op.Units);
-                    }
-                }
-
-                return sum;
-            }
-
-            static DateTime? MaybeEarlier(DateTime? current, DateTime candidate) =>
-                current is null || candidate < current ? candidate : current;
-
-            DateTime? startDay = null;
             foreach (var trade in allTrades)
             {
-                startDay = MaybeEarlier(startDay, trade.EntryTime.DateTime.Date);
-                startDay = MaybeEarlier(startDay, trade.ExitTime.DateTime.Date);
-            }
+                var entryDay = trade.EntryTime.ToMoscowDate();
+                var exitDay = trade.ExitTime.ToMoscowDate();
+                startDay = startDay is null || entryDay < startDay ? entryDay : startDay;
+                if (dayIndex.TryGetValue(exitDay, out int exitIdx) && exitIdx + 1 < realized.Length)
+                {
+                    realized[exitIdx + 1] += trade.PnlRub;
+                }
 
-            foreach (var open in openByTicker.Values)
-            {
-                startDay = MaybeEarlier(startDay, open.EntryTime.DateTime.Date);
-            }
-
-            if (startDay is null && daySet.Count > 0)
-            {
-                startDay = daySet.Max();
-            }
-
-            var points = new List<EquityPointDto>(daySet.Count + 1);
-            foreach (var day in daySet)
-            {
-                if (startDay is { } start && day < start)
+                if (!closeByDateByTicker.TryGetValue(trade.Ticker, out var closes)
+                    || !dayIndex.TryGetValue(entryDay, out int from))
                 {
                     continue;
                 }
 
-                decimal equity = pool + RealizedUpTo(day) + UnrealizedOn(day);
-                points.Add(new EquityPointDto(timeByDay[day], equity));
+                int to = dayIndex.TryGetValue(exitDay, out int idx) ? idx : days.Count - 1;
+                for (int i = from; i <= to && i < days.Count; i++)
+                {
+                    if (closes.TryGetValue(days[i], out decimal close))
+                    {
+                        unrealized[i] += MarkToMarket(
+                            close, (int)trade.Direction, trade.EntryPrice, trade.Units,
+                            opt.PointRub, commission);
+                    }
+                }
+            }
+
+            foreach (var (ticker, open) in openByTicker)
+            {
+                var entryDay = open.EntryTime.ToMoscowDate();
+                startDay = startDay is null || entryDay < startDay ? entryDay : startDay;
+                if (!closeByDateByTicker.TryGetValue(ticker, out var closes)
+                    || !dayIndex.TryGetValue(entryDay, out int from))
+                {
+                    continue;
+                }
+
+                for (int i = from; i < days.Count; i++)
+                {
+                    if (closes.TryGetValue(days[i], out decimal close))
+                    {
+                        unrealized[i] += MarkToMarket(
+                            close, (int)open.Direction, open.EntryPrice, open.Units,
+                            opt.PointRub, commission);
+                    }
+                }
+            }
+
+            if (startDay is null && days.Count > 0)
+            {
+                startDay = days[^1];
+            }
+
+            var points = new List<EquityPointDto>(days.Count + 1);
+            decimal realizedRunning = 0m;
+            for (int i = 0; i < days.Count; i++)
+            {
+                realizedRunning += realized[i];
+                if (startDay is { } from && days[i] < from)
+                {
+                    continue;
+                }
+
+                points.Add(new EquityPointDto(timeByDay[days[i]], pool + realizedRunning + unrealized[i]));
             }
 
             decimal totalRealized = allTrades.Sum(t => t.PnlRub);
@@ -292,9 +299,10 @@ public static class AdminEndpoints
 
                 candles = bars;
             }
-            else if (!string.IsNullOrWhiteSpace(instrument.Uid ?? instrument.Figi))
+            else if (InstrumentEngine.EffectiveInstrumentId(instrument).Length > 0)
             {
-                candles = await history.GetDailyBarsAsync(instrument.Uid ?? instrument.Figi!, 700, ct).ConfigureAwait(false);
+                candles = await history.GetDailyBarsAsync(
+                    InstrumentEngine.EffectiveInstrumentId(instrument), 700, ct).ConfigureAwait(false);
             }
             else
             {
@@ -332,21 +340,20 @@ public static class AdminEndpoints
                 open));
         });
 
-        app.MapGet($"{rootPrefix}/instruments/{{id:guid}}/signals", async (Guid id, ISignalLogRepository signals, int limit, CancellationToken ct) =>
+        // Nullable with a default: a non-nullable int query parameter is REQUIRED by
+        // minimal APIs, so omitting ?limit= returned 400 while the README documented
+        // a default of 100.
+        app.MapGet($"{rootPrefix}/instruments/{{id:guid}}/signals", async (Guid id, ISignalLogRepository signals, int? limit, CancellationToken ct) =>
         {
-            if (limit <= 0 || limit > 500)
-            {
-                limit = 100;
-            }
-
-            return Results.Json(await signals.GetByInstrumentAsync(id, limit, ct).ConfigureAwait(false));
+            int take = limit is > 0 and <= 500 ? limit.Value : 100;
+            return Results.Json(await signals.GetByInstrumentAsync(id, take, ct).ConfigureAwait(false));
         });
 
-        app.MapGet($"{rootPrefix}/signals", async (ISignalLogRepository signals, string? ticker, int page, int pageSize, CancellationToken ct) =>
+        app.MapGet($"{rootPrefix}/signals", async (ISignalLogRepository signals, string? ticker, int? page, int? pageSize, CancellationToken ct) =>
         {
-            page = page <= 0 ? 1 : page;
-            pageSize = pageSize <= 0 || pageSize > 200 ? 50 : pageSize;
-            return Results.Json(await signals.GetPageAsync(ticker, page, pageSize, ct).ConfigureAwait(false));
+            int p = page is > 0 ? page.Value : 1;
+            int size = pageSize is > 0 and <= 200 ? pageSize.Value : 50;
+            return Results.Json(await signals.GetPageAsync(ticker, p, size, ct).ConfigureAwait(false));
         });
 
         app.MapGet($"{rootPrefix}/signals/tickers", async (ISignalLogRepository signals, CancellationToken ct) =>
@@ -598,6 +605,28 @@ public static class AdminEndpoints
             await supervisor.SyncInstrumentsAsync(ct).ConfigureAwait(false);
             logger.LogInformation("Resumed instrument {InstrumentId} ({Ticker})", instrument.Id, instrument.Ticker);
             return Results.Json(instrument);
+        });
+
+        app.MapPost($"{rootPrefix}/instruments/{{id:guid}}/close", async (
+            Guid id, decimal? price, IEngineSupervisor supervisor, CancellationToken ct) =>
+        {
+            var engine = supervisor.GetEngine(id);
+            if (engine is null)
+            {
+                logger.LogWarning("Manual close failed: no running engine for {InstrumentId}", id);
+                return Results.NotFound();
+            }
+
+            var closed = await engine.ClosePositionAsync(price, ct).ConfigureAwait(false);
+            if (closed is null)
+            {
+                return Results.Conflict(new { error = "flat", message = "No open position to close." });
+            }
+
+            logger.LogInformation(
+                "Manually closed {Ticker}: {Units} @ {Exit}, pnl={Pnl:0.00} RUB",
+                closed.Ticker, closed.Units, closed.ExitPrice, closed.PnlRub);
+            return Results.Json(closed);
         });
 
         app.MapPost($"{rootPrefix}/control/stop", async (IEngineSupervisor supervisor, CancellationToken ct) =>
