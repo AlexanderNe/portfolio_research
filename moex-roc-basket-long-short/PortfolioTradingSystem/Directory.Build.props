@@ -1,0 +1,23 @@
+<Project>
+
+  <!--
+    "0 errors and 0 warnings" is a delivery rule for this repository (AGENTS.md).
+    Until now that was measured with the default analyzer settings, so the bar was
+    lower than it sounded. Analysers are on and warnings are errors, which makes
+    the rule mean something.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <!--
+      Default severity set, not "recommended": the recommended tier demands
+      LoggerMessage delegates for every log call (CA1848) and similar wholesale
+      rewrites that this codebase gains nothing from.
+    -->
+    <AnalysisLevel>latest</AnalysisLevel>
+  </PropertyGroup>
+
+</Project>

@@ -37,5 +37,27 @@ var dbInitializer = app.Services.GetRequiredService<IDbInitializer>();
 await dbInitializer.InitializeAsync(app.Lifetime.ApplicationStopping);
 
 var logger = app.Logger;
-logger.LogInformation("Portfolio Trading System starting; listening on {Urls}", builder.Configuration["Urls"]);
+string? urls = builder.Configuration["Urls"] ?? builder.Configuration["ASPNETCORE_URLS"];
+string? adminPassword = builder.Configuration["Admin:Password"];
+if (string.IsNullOrEmpty(adminPassword))
+{
+    logger.LogError(
+        "Admin:Password is not configured - every request will be rejected. "
+        + "Set Admin__Password before using the panel.");
+}
+else if (adminPassword == "admin")
+{
+    logger.LogWarning("Admin:Password is still the sample value; change it before exposing the panel.");
+}
+
+if (urls is not null
+    && (urls.Contains("0.0.0.0", StringComparison.Ordinal) || urls.Contains("[::]", StringComparison.Ordinal))
+    && !urls.Contains("https://", StringComparison.OrdinalIgnoreCase))
+{
+    logger.LogWarning(
+        "Listening on {Urls} over plain HTTP: Basic credentials travel in clear text. "
+        + "Bind to 127.0.0.1 and terminate TLS in a reverse proxy.", urls);
+}
+
+logger.LogInformation("Portfolio Trading System starting; listening on {Urls}", urls);
 await app.RunAsync();

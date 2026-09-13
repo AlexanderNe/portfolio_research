@@ -61,11 +61,13 @@ public sealed class BasicAuthMiddleware
         context.Response.Headers.WWWAuthenticate = $"Basic realm=\"{_options.Realm}\"";
     }
 
-    private static bool SafeEquals(string a, string b)
+    private static bool SafeEquals(string? a, string? b)
     {
+        // Fail CLOSED on a blank side. The old version returned true when both were
+        // empty, so an unconfigured Admin:Password let anyone in with a blank one.
         if (string.IsNullOrEmpty(a) || string.IsNullOrEmpty(b))
         {
-            return string.IsNullOrEmpty(a) && string.IsNullOrEmpty(b);
+            return false;
         }
 
         byte[] da = SHA256.HashData(Encoding.UTF8.GetBytes(a));

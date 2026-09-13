@@ -23,7 +23,7 @@ public sealed class InstrumentEngine : IAsyncDisposable
     private readonly ITelegramGateway _telegram;
     private readonly IPositionRepository _positions;
     private readonly ITradeLogRepository _tradeLogs;
-    private readonly ISignalLogRepository _signalLogs;
+    private readonly ITradeJournal _journal;
     private readonly IMetricsStore _metrics;
     private readonly TelegramMessageFormatter _formatter;
     private readonly ILogger<InstrumentEngine> _logger;
@@ -34,6 +34,7 @@ public sealed class InstrumentEngine : IAsyncDisposable
     private readonly MomentumEngineState _state;
     private readonly object _gate = new();
     private readonly object _barsLock = new();
+    private readonly object _stateLock = new();
     private readonly List<Candle> _dailyBars = new();
     private CancellationTokenSource? _cts;
     private Task? _runTask;
@@ -41,6 +42,10 @@ public sealed class InstrumentEngine : IAsyncDisposable
     private Candle? _sessionBar;
     private DateOnly _sessionDate;
     private bool _enteredThisSession;
+    private bool _exitedThisSession;
+    private bool _sessionOpenObserved;
+    private DateTimeOffset? _lastMinuteTime;
+    private long _lastMinuteVolume;
 
     public InstrumentEngine(
         Instrument instrument,
@@ -50,10 +55,11 @@ public sealed class InstrumentEngine : IAsyncDisposable
         ITelegramGateway telegram,
         IPositionRepository positions,
         ITradeLogRepository tradeLogs,
-        ISignalLogRepository signalLogs,
+        ITradeJournal journal,
         IMetricsStore metrics,
         TelegramMessageFormatter formatter,
         IOptions<EngineOptions> engineOptions,
+        IOptions<TinkoffOptions> tinkoffOptions,
         ILogger<InstrumentEngine> logger)
     {
         _instrument = instrument;
@@ -63,14 +69,14 @@ public sealed class InstrumentEngine : IAsyncDisposable
         _telegram = telegram;
         _positions = positions;
         _tradeLogs = tradeLogs;
-        _signalLogs = signalLogs;
+        _journal = journal;
         _metrics = metrics;
         _formatter = formatter;
         _logger = logger;
         _reconnectStart = TimeSpan.FromSeconds(engineOptions.Value.ReconnectDelaySeconds);
         _reconnectMax = TimeSpan.FromSeconds(engineOptions.Value.ReconnectMaxDelaySeconds);
-        _maxBars = 700;
-        _state = new MomentumEngineState(strategyOptions, instrument.Ticker);
+        _maxBars = Math.Max(strategyOptions.RocBars + 1, tinkoffOptions.Value.HistoricMaxBars);
+        _state = new MomentumEngineState(strategyOptions, instrument.Ticker, instrument.LotSize);
         _metrics.Initialize(instrument.Id, instrument.Ticker);
     }
 
@@ -79,12 +85,23 @@ public sealed class InstrumentEngine : IAsyncDisposable
     public string Ticker => _instrument.Ticker;
 
     /// <summary>Effective T-Bank instrument identifier the engine subscribes to (UID preferred, FIGI fallback).</summary>
-    public string TinkoffInstrumentId => _instrument.Uid ?? _instrument.Figi ?? string.Empty;
+    public string TinkoffInstrumentId => EffectiveInstrumentId(_instrument);
+
+    /// <summary>UID, else FIGI, else empty - treating blank like missing.</summary>
+    public static string EffectiveInstrumentId(Instrument instrument) =>
+        !string.IsNullOrWhiteSpace(instrument.Uid) ? instrument.Uid!
+        : !string.IsNullOrWhiteSpace(instrument.Figi) ? instrument.Figi!
+        : string.Empty;
 
     public bool IsRunning => _runTask is not null && !_runTask.IsCompleted;
 
-    public EngineStateSnapshot? GetSnapshot(decimal? lastPrice) =>
-        _state.GetSnapshot(lastPrice ?? _state.Position?.EntryPrice ?? 0m);
+    public EngineStateSnapshot? GetSnapshot(decimal? lastPrice)
+    {
+        lock (_stateLock)
+        {
+            return _state.GetSnapshot(lastPrice ?? _state.Position?.EntryPrice ?? 0m);
+        }
+    }
 
     /// <summary>Completed daily bars held in memory (warm-up history, finalized sessions), ascending.</summary>
     public IReadOnlyList<Candle> GetDailyBars()
@@ -96,7 +113,16 @@ public sealed class InstrumentEngine : IAsyncDisposable
     }
 
     /// <summary>The live session bar currently being accumulated (not yet finalized).</summary>
-    public Candle? CurrentSessionBar => _sessionBar;
+    public Candle? CurrentSessionBar
+    {
+        get
+        {
+            lock (_stateLock)
+            {
+                return _sessionBar;
+            }
+        }
+    }
 
     public void Start()
     {
@@ -254,7 +280,11 @@ public sealed class InstrumentEngine : IAsyncDisposable
             bars = await _history.GetDailyBarsAsync(TinkoffInstrumentId, _maxBars, ct).ConfigureAwait(false);
         }
 
-        _state.WarmUp(bars);
+        lock (_stateLock)
+        {
+            _state.WarmUp(bars);
+        }
+
         lock (_barsLock)
         {
             _dailyBars.Clear();
@@ -272,7 +302,11 @@ public sealed class InstrumentEngine : IAsyncDisposable
         var open = await _positions.GetOpenAsync(InstrumentId, ct).ConfigureAwait(false);
         if (open is not null)
         {
-            _state.RestorePosition(open);
+            lock (_stateLock)
+            {
+                _state.RestorePosition(open);
+            }
+
             // Free cash at restart must equal the simulator's cash right after the open
             // position was entered: initial capital + realized PnL of closed trades,
             // plus/minus the committed entry cost (long: -notional, short: +margin
@@ -282,24 +316,35 @@ public sealed class InstrumentEngine : IAsyncDisposable
             decimal entryCost =
                 (int)open.Direction * open.Units * open.EntryPrice * _strategyOptions.PointRub
                 + open.OpenCommission;
-            _state.SetCash(_strategyOptions.InitialCapital + realized - entryCost);
+            lock (_stateLock)
+            {
+                _state.SetCash(_strategyOptions.InitialCapital + realized - entryCost);
+            }
+
             _logger.LogInformation(
                 "Restored {Ticker} position: {Direction} {Units} @ {Entry} (open {Open:O})",
                 Ticker, open.Direction, open.Units, open.EntryPrice, open.EntryTime);
         }
         else
         {
-            _state.SetCash(_strategyOptions.InitialCapital + realized);
+            lock (_stateLock)
+            {
+                _state.SetCash(_strategyOptions.InitialCapital + realized);
+            }
         }
 
-        decimal restoreMark = _state.Position is not null
-            ? (bars.Count > 0 ? bars[^1].Close : _state.Position.EntryPrice)
-            : 0m;
-        _metrics.Update(InstrumentId, m =>
+        EngineStateSnapshot restoreSnapshot;
+        OpenPositionPnl? restorePnl;
+        lock (_stateLock)
         {
-            var snapshot = _state.GetSnapshot(restoreMark);
-            ApplyPositionMetrics(m, snapshot, restoreMark);
-        });
+            decimal restoreMark = _state.Position is not null
+                ? (bars.Count > 0 ? bars[^1].Close : _state.Position.EntryPrice)
+                : 0m;
+            restoreSnapshot = _state.GetSnapshot(restoreMark);
+            restorePnl = _state.UnrealizedPnl(restoreMark);
+        }
+
+        _metrics.Update(InstrumentId, m => ApplyPositionMetrics(m, restoreSnapshot, restorePnl));
 
         string lastBar = bars.Count > 0
             ? bars[^1].Time.ToString("yyyy-MM-dd") + " close=" + bars[^1].Close
@@ -309,67 +354,153 @@ public sealed class InstrumentEngine : IAsyncDisposable
             Ticker, bars.Count, lastBar, _state.RoC, _state.PendingSignal ?? 0, _state.Atr, _state.Cash, _state.IsWarmedUp);
     }
 
+    /// <summary>
+    /// Close the open position out of band (operator action from the admin panel).
+    /// Without this the engine and reality diverge permanently the moment an
+    /// operator flattens by hand, and only a database edit could reconcile them.
+    /// </summary>
+    public async Task<TradeClosedEvent?> ClosePositionAsync(decimal? price, CancellationToken ct)
+    {
+        TradeClosedEvent closed;
+        lock (_stateLock)
+        {
+            var position = _state.Position;
+            if (position is null)
+            {
+                return null;
+            }
+
+            decimal mark = price ?? _sessionBar?.Close ?? position.EntryPrice;
+            if (mark <= 0)
+            {
+                return null;
+            }
+
+            closed = _state.ClosePosition(mark, ExitReason.Manual, DateTimeOffset.UtcNow.ToMoscow());
+            _exitedThisSession = true;
+        }
+
+        await PublishClosedAsync(closed, ct).ConfigureAwait(false);
+        return closed;
+    }
+
     private async Task ProcessMinuteAsync(Candle minute, CancellationToken ct)
     {
         DateOnly mskDate = minute.Time.ToMoscowDate();
-        bool newSession = _sessionDate != mskDate;
-        bool positionExistedBeforeThisCandle = _state.Position is not null;
+        OpenPosition? opened = null;
+        TradeClosedEvent? closed = null;
+        Candle? finalized = null;
 
-        if (newSession)
+        lock (_stateLock)
         {
-            if (_sessionBar is not null)
+            bool positionExistedBeforeThisCandle = _state.Position is not null;
+            bool newSession = _sessionDate != mskDate;
+
+            if (newSession)
             {
-                _state.FinalizeDay(_sessionBar.Value);
-                lock (_barsLock)
+                // A session we joined part-way through has a real close but a
+                // fabricated open/high/low; IsComplete tells the engine to keep it
+                // out of ATR.
+                bool sawPreviousSession = _sessionBar is not null;
+                if (_sessionBar is { } previous)
                 {
-                    _dailyBars.Add(_sessionBar.Value);
+                    _state.FinalizeDay(previous);
+                    finalized = previous;
+                }
+
+                _sessionDate = mskDate;
+                _sessionOpenObserved = sawPreviousSession || IsAtSessionOpen(minute.Time);
+                _sessionBar = minute with { IsComplete = _sessionOpenObserved };
+                _enteredThisSession = false;
+                _exitedThisSession = false;
+                _lastMinuteTime = minute.Time;
+                _lastMinuteVolume = minute.Volume;
+            }
+            else if (_sessionBar is { } s)
+            {
+                // The feed re-sends the SAME minute as it updates, so volume has to
+                // be replaced for that minute rather than added again.
+                long volumeDelta = _lastMinuteTime == minute.Time
+                    ? minute.Volume - _lastMinuteVolume
+                    : minute.Volume;
+                _sessionBar = s with
+                {
+                    High = Math.Max(s.High, minute.High),
+                    Low = Math.Min(s.Low, minute.Low),
+                    Close = minute.Close,
+                    Volume = Math.Max(0, s.Volume + volumeDelta),
+                };
+                _lastMinuteTime = minute.Time;
+                _lastMinuteVolume = minute.Volume;
+            }
+
+            // Entry at today's open when yesterday's close produced a signal
+            // (research: entry at bar i open when signals[i-1] != 0).
+            //  * not after an exit in the same session - the position was still open
+            //    at that open, so the price is gone by the time the stop/target hits;
+            //  * not at all unless this session's open was actually observed - an
+            //    engine that joined at 14:00 cannot advise a fill at the 10:00 open.
+            if (!positionExistedBeforeThisCandle && !_enteredThisSession
+                && !_exitedThisSession && _sessionOpenObserved && _sessionBar is { } bar)
+            {
+                opened = _state.TryOpen(bar.Open, bar.Time);
+                if (opened is not null)
+                {
+                    _enteredThisSession = true;
+                    opened.InstrumentId = InstrumentId;
+                    opened.Ticker = Ticker;
                 }
             }
 
-            _sessionDate = mskDate;
-            _sessionBar = minute;
-            _enteredThisSession = false;
-        }
-        else if (_sessionBar is { } s)
-        {
-            _sessionBar = s with
+            // Intraday SL/TP check (only for positions that existed before this
+            // candle, mirroring the research ordering where a just-opened bar is
+            // not exited against its own range).
+            if (positionExistedBeforeThisCandle)
             {
-                High = Math.Max(s.High, minute.High),
-                Low = Math.Min(s.Low, minute.Low),
-                Close = minute.Close,
-                Volume = s.Volume + minute.Volume,
-            };
-        }
-
-        // Entry at today's open when yesterday's close produced a signal
-        // (research: entry at bar i open when signals[i-1] != 0).
-        if (!positionExistedBeforeThisCandle && !_enteredThisSession && _sessionBar is { } bar)
-        {
-            var opened = _state.TryOpen(bar.Open, minute.Time);
-            if (opened is not null)
-            {
-                _enteredThisSession = true;
-                opened.InstrumentId = InstrumentId;
-                opened.Ticker = Ticker;
-                await _positions.SaveAsync(opened, ct).ConfigureAwait(false);
-                var e = new TradeOpenedEvent(
-                    opened.Ticker, opened.Direction, opened.Units,
-                    opened.EntryPrice, opened.StopLoss, opened.TakeProfit,
-                    opened.AtrAtEntry, opened.EntryTime);
-                await PublishOpenedAsync(e, ct).ConfigureAwait(false);
+                closed = _state.CheckStop(minute.High, minute.Low, minute.Time, minute.Open);
+                if (closed is not null)
+                {
+                    _exitedThisSession = true;
+                }
             }
         }
 
-        // Intraday SL/TP check (only for positions that existed before this candle,
-        // mirroring the research ordering where a just-opened bar is not exited
-        // against its own range).
-        if (positionExistedBeforeThisCandle)
+        if (finalized is { } bar2)
         {
-            var closed = _state.CheckStop(minute.High, minute.Low, minute.Time);
-            if (closed is not null)
+            lock (_barsLock)
             {
-                await PublishClosedAsync(closed, ct).ConfigureAwait(false);
+                _dailyBars.Add(bar2);
             }
+
+            if (!bar2.IsComplete)
+            {
+                _logger.LogWarning(
+                    "Session {Date:yyyy-MM-dd} for {Ticker} was only partially observed; "
+                    + "its close feeds ROC but its range is kept out of ATR",
+                    bar2.Time, Ticker);
+            }
+        }
+
+        if (opened is not null)
+        {
+            var e = new TradeOpenedEvent(
+                opened.Ticker, opened.Direction, opened.Units,
+                opened.EntryPrice, opened.StopLoss, opened.TakeProfit,
+                opened.AtrAtEntry, opened.EntryTime);
+            await PublishOpenedAsync(opened, e, ct).ConfigureAwait(false);
+        }
+
+        if (closed is not null)
+        {
+            await PublishClosedAsync(closed, ct).ConfigureAwait(false);
+        }
+
+        EngineStateSnapshot snapshot;
+        OpenPositionPnl? pnl;
+        lock (_stateLock)
+        {
+            snapshot = _state.GetSnapshot(minute.Close);
+            pnl = _state.UnrealizedPnl(minute.Close);
         }
 
         _metrics.Update(InstrumentId, m =>
@@ -378,17 +509,25 @@ public sealed class InstrumentEngine : IAsyncDisposable
             m.LastCandleClose = minute.Close;
             m.LastProcessedBarTime = DateTimeOffset.UtcNow;
             m.BarsProcessed++;
-            var s = _state.GetSnapshot(minute.Close);
-            m.Roc = s.RoC;
-            m.Atr = s.Atr;
-            m.Cash = s.Cash;
-            m.Equity = s.Equity;
-            m.PendingSignal = s.PendingSignal;
-            ApplyPositionMetrics(m, s, minute.Close);
+            m.Roc = snapshot.RoC;
+            m.Atr = snapshot.Atr;
+            m.Cash = snapshot.Cash;
+            m.Equity = snapshot.Equity;
+            m.PendingSignal = snapshot.PendingSignal;
+            ApplyPositionMetrics(m, snapshot, pnl);
         });
     }
 
-    private void ApplyPositionMetrics(InstrumentMetrics m, EngineStateSnapshot s, decimal markPrice)
+    /// <summary>True while a candle still falls inside the entry window after the open.</summary>
+    private bool IsAtSessionOpen(DateTimeOffset time)
+    {
+        TimeSpan msk = time.ToMoscow().TimeOfDay;
+        TimeSpan open = MoscowClock.SessionOpen;
+        return msk >= open
+               && msk < open + TimeSpan.FromMinutes(Math.Max(1, _strategyOptions.EntryWindowMinutes));
+    }
+
+    private static void ApplyPositionMetrics(InstrumentMetrics m, EngineStateSnapshot s, OpenPositionPnl? pnl)
     {
         m.PositionState = s.PositionDirection switch
         {
@@ -397,14 +536,15 @@ public sealed class InstrumentEngine : IAsyncDisposable
             _ => "flat",
         };
         m.PositionSince = s.EntryTime;
-        var pnl = _state.UnrealizedPnl(markPrice);
         m.PositionPnl = pnl?.Rub;
         m.PositionPnlPercent = pnl?.Percent;
     }
 
-    private async Task PublishOpenedAsync(TradeOpenedEvent e, CancellationToken ct)
+    private async Task PublishOpenedAsync(OpenPosition position, TradeOpenedEvent e, CancellationToken ct)
     {
-        await _signalLogs.AddAsync(new SignalLogEntry
+        // position + signal in one transaction: a crash between them used to leave
+        // an advised entry with no position behind it.
+        await _journal.RecordOpenAsync(position, new SignalLogEntry
         {
             InstrumentId = InstrumentId,
             Ticker = e.Ticker,
@@ -432,36 +572,39 @@ public sealed class InstrumentEngine : IAsyncDisposable
 
     private async Task PublishClosedAsync(TradeClosedEvent e, CancellationToken ct)
     {
-        await _signalLogs.AddAsync(new SignalLogEntry
-        {
-            InstrumentId = InstrumentId,
-            Ticker = e.Ticker,
-            Type = SignalType.PositionClosed,
-            Direction = e.Direction,
-            Price = e.ExitPrice,
-            ExitPrice = e.ExitPrice,
-            ExitReason = e.Reason,
-            PnlPercent = e.ReturnPercent,
-            Timestamp = e.ExitTime,
-        }, ct).ConfigureAwait(false);
-
-        await _tradeLogs.AddAsync(new TradeLogEntry
-        {
-            InstrumentId = InstrumentId,
-            Ticker = e.Ticker,
-            Direction = e.Direction,
-            Units = e.Units,
-            EntryPrice = e.EntryPrice,
-            ExitPrice = e.ExitPrice,
-            PnlRub = e.PnlRub,
-            ReturnPercent = e.ReturnPercent,
-            ExitReason = e.Reason,
-            Commission = e.Commission,
-            EntryTime = e.EntryTime,
-            ExitTime = e.ExitTime,
-        }, ct).ConfigureAwait(false);
-
-        await _positions.DeleteAsync(InstrumentId, ct).ConfigureAwait(false);
+        // trade log + signal log + position delete in one transaction: applied
+        // separately, a crash in the middle made the restored cash wrong (the
+        // trade counted AND the position restored).
+        await _journal.RecordCloseAsync(
+            InstrumentId,
+            new TradeLogEntry
+            {
+                InstrumentId = InstrumentId,
+                Ticker = e.Ticker,
+                Direction = e.Direction,
+                Units = e.Units,
+                EntryPrice = e.EntryPrice,
+                ExitPrice = e.ExitPrice,
+                PnlRub = e.PnlRub,
+                ReturnPercent = e.ReturnPercent,
+                ExitReason = e.Reason,
+                Commission = e.Commission,
+                EntryTime = e.EntryTime,
+                ExitTime = e.ExitTime,
+            },
+            new SignalLogEntry
+            {
+                InstrumentId = InstrumentId,
+                Ticker = e.Ticker,
+                Type = SignalType.PositionClosed,
+                Direction = e.Direction,
+                Price = e.ExitPrice,
+                ExitPrice = e.ExitPrice,
+                ExitReason = e.Reason,
+                PnlPercent = e.ReturnPercent,
+                Timestamp = e.ExitTime,
+            },
+            ct).ConfigureAwait(false);
 
         try
         {

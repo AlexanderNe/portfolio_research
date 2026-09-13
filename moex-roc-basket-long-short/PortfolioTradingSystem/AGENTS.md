@@ -9,11 +9,14 @@ agent, not for end users (see `README.md` for user/developer docs).
   (angles: working dir `C:\Users\...\PortfolioTradingSystem`, or via `workdir`).
 - Every delivery must end with a build that is **0 errors and 0 warnings**.
 - **Never modify the Python research** (`../strategy_research.py`, `../report`,
-  `../data/`) — it is the single source of truth for the strategy.
+  `../data/`) — it is the single source of truth for the strategy. (Exception,
+  2026-09-12, on explicit request: the simulator's execution model was corrected;
+  see `../CODE_REVIEW.md`. `../report` is still NOT regenerated.)
 - Never commit, amend, or push unless explicitly asked.
-- `PortfolioTradingSystem.Tests` (xUnit) covers `MomentumEngineState` algorithm
-  math; run `dotnet test PortfolioTradingSystem.Tests`. It references only the
-  Domain project — no app state touched.
+- `PortfolioTradingSystem.Tests` (xUnit) covers `MomentumEngineState` math, the
+  execution model, `InstrumentEngine` against in-memory fakes, and parity with the
+  Python simulator on a fixture of real bars. It references Domain + Application;
+  no real broker, database or app state. Run `dotnet test PortfolioTradingSystem.Tests`.
 - Do not log credentials/tokens/secret values. Log only presence flags
   (e.g. `tokenConfigured`).
 
@@ -49,10 +52,13 @@ agent, not for end users (see `README.md` for user/developer docs).
 
 - Warm-up: up to `HistoricMaxBars` (700) daily bars; ATR seeded from first high-low,
   then EWM alpha=1/14; ROC from `close/close[n]−1`; PendingSignal +1/−1/0.
-- Entry: at the OPEN of the first streamed 1-min candle when the prior completed
-  session's pending signal is active (`signal[i-1]` semantics) — mid-session
-  activation enters at the current minute's open, NOT the 10:00 session open.
-  This is the documented live deviation; entries appear "immediately after resume".
+- Entry: at the session open, and ONLY when that open was observed — the engine
+  either saw the previous session end, or its first candle of the session is inside
+  `Strategy:EntryWindowMinutes` (15) of 10:00 MSK. Mid-session activation therefore
+  waits for the NEXT session instead of quoting a stale open. An entry is also
+  never advised in a session that already produced an exit. (Both replaced the old
+  "entries appear immediately after resume" behaviour on 2026-09-12; removing
+  either guard fails `InstrumentEngineTests`.)
 - Entry timestamp = the 1-minute candle's start time (may predate the engine start
   timestamp). The "Opened" log now includes this time.
 - Intraday SL/TP checked only for positions that existed BEFORE the candle.
@@ -61,8 +67,12 @@ agent, not for end users (see `README.md` for user/developer docs).
 - Restart recovery: cash = `InitialCapital` + sum(realized PnL) with the open
   position's committed entry cost applied (long: −notional − open commission,
   short: +margin credit − open commission), matching the simulator's cash mechanics.
-  Open position restored from `OpenPositions`. Pause/resume within the same session resets
-  `_enteredThisSession` — a flat same-day re-entry is possible after resume.
+  Open position restored from `OpenPositions`. A resume mid-session no longer
+  re-enters: the session open was not observed, so the engine waits for the next one.
+- Open/close each go through `ITradeJournal` — one DbContext, one transaction —
+  so a crash cannot leave "trade counted AND position still open".
+- Sizing rounds down to whole `Instrument.LotSize` lots and the leverage cap leaves
+  room for the opening commission.
 - Stream reconnect: exponential backoff 2s → 60s.
 - Telegram: manual re-send is driven from the admin UI (never inline on the signal
   itself). Signal-log rows → `POST /api/signals/{id}/resend`; the active position's
@@ -81,7 +91,10 @@ agent, not for end users (see `README.md` for user/developer docs).
 
 ## Known caveats / watch-items
 
-- `EnsureCreated` schema — recreate DB on model changes (see above).
+- `EnsureCreated` schema — recreate DB on model changes (see above). The UNIQUE
+  index on `OpenPositions.InstrumentId` added 2026-09-12 is exactly such a change.
+- `TinkoffMappers.TodayMoscowStart` is a METHOD. As a static readonly field it froze
+  at process start and stale-dated every warm-up after long uptime.
 - Sunday/Moscow calendar anomalies can produce surprising candle timestamps (e.g. an
   entry at 21:28 Moscow on a non-trading Sunday in the Sept 2026 session); flag
   before shipping changes, don't silently "fix".

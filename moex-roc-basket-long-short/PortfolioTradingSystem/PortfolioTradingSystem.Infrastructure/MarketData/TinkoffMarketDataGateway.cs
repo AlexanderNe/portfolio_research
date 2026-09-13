@@ -30,6 +30,7 @@ public sealed class TinkoffMarketDataMultiplexer : IMarketDataGateway, IAsyncDis
     private readonly object _gate = new();
     private readonly Dictionary<string, Channel<Candle>> _subscriptions = new();
     private CancellationTokenSource? _workerCts;
+    private CancellationTokenSource? _streamCts;
     private Task? _worker;
     private bool _restartRequested;
 
@@ -105,20 +106,52 @@ public sealed class TinkoffMarketDataMultiplexer : IMarketDataGateway, IAsyncDis
         RequestRestart();
     }
 
-    private void RequestRestart() => Volatile.Write(ref _restartRequested, true);
+    /// <summary>
+    /// Flag the subscription set as changed AND break the current stream read.
+    /// Without the cancellation the flag was only ever noticed when the next
+    /// message arrived, so an instrument resumed while the market was quiet could
+    /// wait indefinitely for its subscription.
+    /// </summary>
+    private void RequestRestart()
+    {
+        Volatile.Write(ref _restartRequested, true);
+        CancellationTokenSource? cts;
+        lock (_gate)
+        {
+            cts = _streamCts;
+        }
+
+        try
+        {
+            cts?.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+    }
 
     private void EnsureWorkerRunning()
     {
-        if (_worker is not null && !_worker.IsCompleted)
+        // Engines subscribe concurrently: without this lock two of them could both
+        // see "no worker" and open two streams, doubling every candle and violating
+        // the SingleWriter contract of the per-instrument channels.
+        lock (_gate)
         {
-            return;
-        }
+            if (_worker is not null && !_worker.IsCompleted)
+            {
+                return;
+            }
 
-        _workerCts?.Dispose();
-        _workerCts = new CancellationTokenSource();
-        var ct = _workerCts.Token;
-        _worker = Task.Run(() => RunWorkerAsync(ct), ct);
+            _workerCts?.Dispose();
+            _workerCts = new CancellationTokenSource();
+            var ct = _workerCts.Token;
+            _worker = Task.Run(() => RunWorkerAsync(ct), ct);
+        }
     }
+
+    private static bool IsCancellation(Exception ex) =>
+        ex is OperationCanceledException
+        || (ex is RpcException rpc && rpc.StatusCode == StatusCode.Cancelled);
 
     private async Task RunWorkerAsync(CancellationToken ct)
     {
@@ -147,14 +180,20 @@ public sealed class TinkoffMarketDataMultiplexer : IMarketDataGateway, IAsyncDis
 
             var request = BuildRequest(ids);
             _logger.LogDebug("Opening shared market data stream for {Count} instruments", ids.Count);
+            var streamCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            lock (_gate)
+            {
+                _streamCts = streamCts;
+            }
+
             AsyncServerStreamingCall<MarketDataResponse> call = _connection.MarketDataStream.MarketDataServerSideStream(
                 request,
-                new CallOptions(headers: _connection.Metadata, cancellationToken: ct));
+                new CallOptions(headers: _connection.Metadata, cancellationToken: streamCts.Token));
 
             bool reopenedForChange = false;
             try
             {
-                await foreach (var message in call.ResponseStream.ReadAllAsync(ct).ConfigureAwait(false))
+                await foreach (var message in call.ResponseStream.ReadAllAsync(streamCts.Token).ConfigureAwait(false))
                 {
                     if (Volatile.Read(ref _restartRequested))
                     {
@@ -162,6 +201,19 @@ public sealed class TinkoffMarketDataMultiplexer : IMarketDataGateway, IAsyncDis
                         reopenedForChange = true;
                         _logger.LogDebug("Subscription set changed; reopening shared stream");
                         break;
+                    }
+
+                    if (message.SubscribeCandlesResponse is { } subscribed)
+                    {
+                        foreach (var status in subscribed.CandlesSubscriptions)
+                        {
+                            if (status.SubscriptionStatus != SubscriptionStatus.Success)
+                            {
+                                _logger.LogError(
+                                    "Candle subscription rejected for {InstrumentId}: {Status}",
+                                    status.InstrumentUid, status.SubscriptionStatus);
+                            }
+                        }
                     }
 
                     if (message.Candle is not null)
@@ -191,15 +243,22 @@ public sealed class TinkoffMarketDataMultiplexer : IMarketDataGateway, IAsyncDis
                     else
                     {
                         // Genuine end of stream (server-side EOF) with an unchanged set.
-                        _logger.LogWarning("Shared market data stream ended; reconnecting");
-                        delay = _reconnectStart;
+                        _logger.LogWarning("Shared market data stream ended; reconnecting in {Delay}s", delay.TotalSeconds);
                         await Task.Delay(delay, ct).ConfigureAwait(false);
+                        delay = TimeSpan.FromMilliseconds(Math.Min(delay.TotalMilliseconds * 2, _reconnectMax.TotalMilliseconds));
                     }
                 }
             }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            catch (Exception ex) when (IsCancellation(ex) && ct.IsCancellationRequested)
             {
                 break;
+            }
+            catch (Exception ex) when (IsCancellation(ex))
+            {
+                // The subscription set changed and cancelled the read: reopen at once.
+                Volatile.Write(ref _restartRequested, false);
+                delay = _reconnectStart;
+                await Task.Delay(150, ct).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -210,6 +269,15 @@ public sealed class TinkoffMarketDataMultiplexer : IMarketDataGateway, IAsyncDis
             }
             finally
             {
+                lock (_gate)
+                {
+                    if (ReferenceEquals(_streamCts, streamCts))
+                    {
+                        _streamCts = null;
+                    }
+                }
+
+                streamCts.Dispose();
                 call.Dispose();
             }
         }
@@ -238,6 +306,11 @@ public sealed class TinkoffMarketDataMultiplexer : IMarketDataGateway, IAsyncDis
 
     public async ValueTask DisposeAsync()
     {
+        lock (_gate)
+        {
+            _streamCts?.Cancel();
+        }
+
         _workerCts?.Cancel();
         if (_worker is not null)
         {

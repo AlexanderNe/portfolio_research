@@ -9,9 +9,17 @@ namespace PortfolioTradingSystem.Infrastructure.Tinkoff;
 
 internal static class TinkoffMappers
 {
-    /// <summary>Time used as the daily-bar cutoff: the current calendar day in Moscow.</summary>
-    public static readonly DateTimeOffset TodayMoscowStart =
-        new DateTimeOffset(DateTimeOffset.UtcNow.UtcDateTime.Date, TimeSpan.Zero).ToOffset(MoscowClock.Offset);
+    /// <summary>
+    /// Midnight of the current Moscow day. Must be evaluated per call: as a static
+    /// readonly field it froze at process start, and this service is expected to
+    /// run for months, so a warm-up after a few weeks of uptime asked T-Bank for
+    /// history up to a date that was weeks stale.
+    /// </summary>
+    public static DateTimeOffset TodayMoscowStart()
+    {
+        DateTimeOffset moscowNow = DateTimeOffset.UtcNow.ToOffset(MoscowClock.Offset);
+        return new DateTimeOffset(moscowNow.Date, MoscowClock.Offset);
+    }
 
     public static decimal ToDecimal(TQuotation q) => q.Units + q.Nano / 1_000_000_000m;
 

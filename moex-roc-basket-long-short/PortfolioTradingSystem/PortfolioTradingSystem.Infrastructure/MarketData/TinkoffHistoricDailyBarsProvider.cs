@@ -29,7 +29,7 @@ public sealed class TinkoffHistoricDailyBarsProvider : IHistoricDailyBarsProvide
             return Array.Empty<Candle>();
         }
 
-        DateTimeOffset to = TinkoffMappers.TodayMoscowStart;
+        DateTimeOffset to = TinkoffMappers.TodayMoscowStart();
         DateTimeOffset from = to.AddYears(-6);
 
         var response = await _connection.MarketData.GetCandlesAsync(

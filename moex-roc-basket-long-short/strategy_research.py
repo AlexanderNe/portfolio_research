@@ -10,6 +10,10 @@ Methodology (to not fool ourselves):
   * parameters are selected ONLY on train (by best Sharpe);
   * out-of-sample metrics are read from test;
   * entry at the OPEN of the next bar (no look-ahead);
+  * a bar that produced an exit can NOT also produce an entry: the position was
+    still open at that bar's open, so re-entering there would be a fill at a
+    price that no longer exists once the stop/target is hit;
+  * a bar opening beyond a level fills at the OPEN (stops gap through);
   * if both SL and TP are hit in the same bar, SL wins (conservative).
 """
 
@@ -103,6 +107,10 @@ class Simulator:
         day_stop: float = 0.0,
         longs_only: bool = False,
         same_day_exit: bool = False,
+        lot_size: int = 1,
+        slippage_pct: float = 0.0,
+        gap_fills: bool = True,
+        atr_series=None,
     ):
         self.df = df
         self.initial_capital = initial_capital
@@ -118,7 +126,14 @@ class Simulator:
         self.day_stop = day_stop
         self.sl_atr = sl_atr
         self.tp_atr = tp_atr
-        self.atr = compute_atr(df, atr_period)
+        # ATR may be supplied pre-warmed (in a walk-forward fold the fold-local
+        # EWM re-seeds from the fold's first bar and stays biased for roughly
+        # 3*period bars, distorting both the stop distance and position sizing).
+        self.atr = (compute_atr(df, atr_period).to_numpy()
+                    if atr_series is None else np.asarray(atr_series, dtype=float))
+        self.lot_size = max(1, int(lot_size))
+        self.slippage = slippage_pct / 100.0
+        self.gap_fills = gap_fills
         self.session_gated = session_gated
         self.eod_flat = eod_flat
         self.position_pct = position_pct
@@ -127,11 +142,34 @@ class Simulator:
         self.open_range_n = open_range_n
         self.longs_only = longs_only
         self.same_day_exit = same_day_exit
+        # Intraday day-range bounds for the tp_frac exit mode, computed once
+        # instead of re-grouping the whole frame inside the per-bar loop.
+        self._day_range = None
+        if tp_frac > 0:
+            dts = df["timestamp"].dt.date
+            low_run = (df["low"].groupby(dts, sort=False).cummin()
+                       .groupby(dts, sort=False).shift(1))
+            high_run = (df["high"].groupby(dts, sort=False).cummax()
+                        .groupby(dts, sort=False).shift(1))
+            self._day_range = (high_run - low_run).to_numpy()
 
-    def run(self, signals: np.ndarray) -> Dict:
-        """signals: +1/-1/0 array per bar (decision made on close of bar i)"""
+    def _fill(self, price: float, direction: int, entering: bool) -> float:
+        """Apply adverse slippage to a fill price (0 disables)."""
+        if self.slippage <= 0:
+            return price
+        return price * (1.0 + (direction if entering else -direction) * self.slippage)
+
+    def run(self, signals: np.ndarray, initial_position=None,
+            initial_cash: float = None, close_at_end: bool = True) -> Dict:
+        """signals: +1/-1/0 array per bar (decision made on close of bar i).
+
+        initial_position / initial_cash carry an open position (and the cash it
+        already consumed) in from the previous walk-forward fold; close_at_end=False
+        hands the still-open position back instead of force-closing it, so fold
+        boundaries stop manufacturing artificial exits.
+        """
         df = self.df
-        atr = self.atr.to_numpy()
+        atr = self.atr
         signals = np.asarray(signals, dtype=int)
         ts_list = df["timestamp"].tolist()
         op_arr = df["open"].to_numpy()
@@ -140,8 +178,8 @@ class Simulator:
         cl_arr = df["close"].to_numpy()
         n_bars = len(df)
 
-        cash = self.initial_capital
-        position = None  # {dir, units, entry, sl, tp, entry_time}
+        cash = self.initial_capital if initial_cash is None else initial_cash
+        position = initial_position  # {dir, units, entry, sl, tp, entry_time}
         trades = []
         peak = self.initial_capital
         max_dd = 0.0
@@ -175,6 +213,7 @@ class Simulator:
         halt_date = None
 
         for i in range(n_bars):
+            exited_this_bar = False
             ts = ts_list[i]
             op = op_arr[i]
             hi = hi_arr[i]
@@ -206,21 +245,32 @@ class Simulator:
                         if hi >= stop:
                             exit_price, reason = stop, "trail_stop"
                 else:
+                    # A bar that opens beyond the level fills at the OPEN, not at
+                    # the level: stops get gapped through, targets gapped into.
                     if position["dir"] == 1:
                         if lo <= position["sl"]:
-                            exit_price, reason = position["sl"], "stop_loss"
-                        elif hi >= position["tp"]:
-                            exit_price, reason = position["tp"], "take_profit"
+                            exit_price = (min(op, position["sl"]) if self.gap_fills
+                                          else position["sl"])
+                            reason = "stop_loss"
+                        elif position["tp"] is not None and hi >= position["tp"]:
+                            exit_price = (max(op, position["tp"]) if self.gap_fills
+                                          else position["tp"])
+                            reason = "take_profit"
                     else:
                         if hi >= position["sl"]:
-                            exit_price, reason = position["sl"], "stop_loss"
-                        elif lo <= position["tp"]:
-                            exit_price, reason = position["tp"], "take_profit"
+                            exit_price = (max(op, position["sl"]) if self.gap_fills
+                                          else position["sl"])
+                            reason = "stop_loss"
+                        elif position["tp"] is not None and lo <= position["tp"]:
+                            exit_price = (min(op, position["tp"]) if self.gap_fills
+                                          else position["tp"])
+                            reason = "take_profit"
 
                 if exit_price is None and force_bar[i]:
                     exit_price, reason = close, "end_of_day"
 
                 if exit_price is not None:
+                    exit_price = self._fill(exit_price, position["dir"], False)
                     gross = (exit_price - position["entry"]) * position["units"] * position["dir"] * self.point_rub
                     comm_close = exit_price * position["units"] * self.commission + self.fixed_fee
                     if position["dir"] == 1:
@@ -243,17 +293,22 @@ class Simulator:
                         "ret": pnl / (position["entry"] * position["units"] * self.point_rub),
                     })
                     position = None
+                    exited_this_bar = True
 
             # --- entry on prior bar's signal ---
-            if (position is None and i > 0 and signals[i - 1] != 0
+            # NEVER on a bar that already produced an exit: the position was still
+            # open at this bar's open, so re-entering at that open is a fill at a
+            # price that no longer exists by the time the stop/target is hit.
+            if (position is None and not exited_this_bar
+                    and i > 0 and signals[i - 1] != 0
                     and can_enter[i]
                     and (halt_date is None or ts.date() != halt_date)):
                 dir_sig = signals[i - 1]
                 if dir_sig < 0 and self.longs_only:
                     dir_sig = 0
-                if atr[i - 1] is not None and atr[i - 1] > 0:
+                if atr[i - 1] > 0:
                     a = atr[i - 1]
-                    entry = op
+                    entry = self._fill(op, dir_sig, True)
                     if self.fixed_units > 0:
                         units = self.fixed_units
                     elif self.risk_pct is not None:
@@ -264,8 +319,14 @@ class Simulator:
                         units = int((self.position_pct / 100.0 * cash) /
                                     (entry * self.point_rub))
                     notional_rub = entry * self.point_rub
-                    units_cap = int(self.leverage * cash / notional_rub)
+                    # the opening commission is paid out of the same cash, so the
+                    # cap has to leave room for it - otherwise "notional <= cash"
+                    # is breached by exactly the commission.
+                    units_cap = int(self.leverage * cash /
+                                    (notional_rub * (1.0 + self.commission)))
                     units = max(0, min(units, units_cap))
+                    if self.lot_size > 1:
+                        units = (units // self.lot_size) * self.lot_size
                     if units > 0:
                         open_comm = units * entry * self.commission + self.fixed_fee
                         if dir_sig == 1:
@@ -278,12 +339,7 @@ class Simulator:
                             else:
                                 sl, tp = entry + self.sl_pts, entry - self.tp_pts
                         elif self.tp_frac > 0:
-                            dts = self.df["timestamp"].dt.date
-                            low_run = (self.df["low"].groupby(dts, sort=False).cummin()
-                                       .groupby(dts, sort=False).shift(1))
-                            high_run = (self.df["high"].groupby(dts, sort=False).cummax()
-                                        .groupby(dts, sort=False).shift(1))
-                            rng = max((high_run - low_run).to_numpy()[i], a)
+                            rng = max(self._day_range[i], a)
                             slf = self.sl_frac if self.sl_frac > 0 else 1.0
                             if dir_sig == 1:
                                 sl, tp = entry - slf * rng, entry + self.tp_frac * rng
@@ -324,6 +380,7 @@ class Simulator:
                             exit_price, reason = tp_v, "take_profit"
                 if exit_price is None:
                     exit_price, reason = close, "end_of_day"
+                exit_price = self._fill(exit_price, d_s, False)
                 gross = (exit_price - position["entry"]) * position["units"] * position["dir"] * self.point_rub
                 comm_close = exit_price * position["units"] * self.commission + self.fixed_fee
                 if position["dir"] == 1:
@@ -354,9 +411,11 @@ class Simulator:
                 max_dd = dd
             daily.setdefault(ts.date(), []).append(equity)
 
-        # close any position left at the end
-        if position is not None:
-            close = cl_arr[-1]
+        # Close whatever is left only when asked to. A walk-forward fold that
+        # hands its position to the next fold must NOT book an artificial
+        # "backtest_end" trade at the fold boundary.
+        if position is not None and close_at_end:
+            close = self._fill(cl_arr[-1], position["dir"], False)
             gross = (close - position["entry"]) * position["units"] * position["dir"] * self.point_rub
             comm_close = close * position["units"] * self.commission + self.fixed_fee
             if position["dir"] == 1:
@@ -374,6 +433,7 @@ class Simulator:
                 "pnl": gross - comm_close - position["open_comm"],
                 "ret": (gross - comm_close - position["open_comm"]) / (position["entry"] * position["units"] * self.point_rub),
             })
+            position = None
 
         total_pnl = sum(t["pnl"] for t in trades)
         daily_close = pd.Series([v[-1] for v in daily.values()])
@@ -394,6 +454,8 @@ class Simulator:
             "sharpe": sharpe,
             "max_drawdown": max_dd,
             "equity_curve": [(d, v[-1]) for d, v in daily.items()],
+            "open_position": position,
+            "cash": cash,
         }
 
 
@@ -782,7 +844,8 @@ STRAT_FUNCS = {
 }
 
 
-def run_instrument(file_path: Path, intraday: bool, cfg: Dict) -> Dict:
+def run_instrument(file_path: Path, intraday: bool, cfg: Dict,
+                   grids: Dict = None, min_trades: int = 15) -> Dict:
     df = load_candle_data(file_path)
     ticker = file_path.stem
     if len(df) < 1000 and intraday:
@@ -809,14 +872,20 @@ def run_instrument(file_path: Path, intraday: bool, cfg: Dict) -> Dict:
 
     import time as _time
     _t0 = _time.time()
-    strat_tot = len(strategy_grids().items())
-    for si, (name, grid) in enumerate(strategy_grids().items(), 1):
+    lot_size = cfg.get("lot_size", 1)
+    slippage = cfg.get("slippage_pct", 0.0)
+    if grids is None:
+        grids = strategy_grids()
+    strat_tot = len(grids)
+    for si, (name, grid) in enumerate(grids.items(), 1):
         print(f"  [{ticker}] {name}: training grid "
               f"({len(grid) * len(trails)} combos) ...", flush=True)
         best, best_score = None, -np.inf
         exits = cfg.get("exit_grid", [(sl_atr, tp_atr)])
         specs = [("atr", sl_a, tp_a) for sl_a, tp_a in exits]
-        specs += [("range", tf, sf) for tf, sf in cfg.get("range_targets", [])]
+        # see walk_forward: spec (a, b) is (sl, tp), the CLI pairs are (tp, sl)
+        specs += [("range", sl_f, tp_f) for tp_f, sl_f in cfg.get("range_targets", [])]
+        specs += [("pts", sl_p, tp_p) for sl_p, tp_p in cfg.get("pt_targets", [])]
         for pi, params in enumerate(grid, 1):
             sig = STRAT_FUNCS[name](train, params)
             for kind, a, b in specs:
@@ -834,10 +903,11 @@ def run_instrument(file_path: Path, intraday: bool, cfg: Dict) -> Dict:
                         fixed_fee=sell_fee, point_rub=point_rub,
                         leverage=leverage, fixed_units=fixed_units,
                         day_stop=cfg.get("day_stop", 0.0),
+                        lot_size=lot_size, slippage_pct=slippage,
                         longs_only=cfg.get("longs_only", False),
                         same_day_exit=cfg.get("same_day_exit", False))
                     out = sim.run(sig)
-                    if out["n_trades"] >= 15:  # minimum trades for confidence
+                    if out["n_trades"] >= min_trades:
                         score = out["sharpe"]
                         if score > best_score:
                             best_score, best = score, (params, kind, a, b, trail)
@@ -861,8 +931,12 @@ def run_instrument(file_path: Path, intraday: bool, cfg: Dict) -> Dict:
             trail_atr=trail if kind == "atr" else 0.0,
             tp_frac=b if kind == "range" else 0.0,
             sl_frac=a if kind == "range" else 0.0,
+            tp_pts=b if kind == "pts" else 0.0,
+            sl_pts=a if kind == "pts" else 0.0,
             fixed_fee=fixed_fee, point_rub=point_rub,
             leverage=leverage, fixed_units=fixed_units,
+            day_stop=cfg.get("day_stop", 0.0),
+            lot_size=lot_size, slippage_pct=slippage,
             longs_only=cfg.get("longs_only", False),
             same_day_exit=cfg.get("same_day_exit", False)).run(sig_test)
         train_out = Simulator(
@@ -873,9 +947,12 @@ def run_instrument(file_path: Path, intraday: bool, cfg: Dict) -> Dict:
             trail_atr=trail if kind == "atr" else 0.0,
             tp_frac=b if kind == "range" else 0.0,
             sl_frac=a if kind == "range" else 0.0,
+            tp_pts=b if kind == "pts" else 0.0,
+            sl_pts=a if kind == "pts" else 0.0,
             fixed_fee=fixed_fee, point_rub=point_rub,
             leverage=leverage, fixed_units=fixed_units,
             day_stop=cfg.get("day_stop", 0.0),
+            lot_size=lot_size, slippage_pct=slippage,
             longs_only=cfg.get("longs_only", False),
             same_day_exit=cfg.get("same_day_exit", False)).run(
             STRAT_FUNCS[name](train, params)
@@ -897,22 +974,39 @@ WARMUP = 500  # signal warm-up bars prepended to each OOS fold (must cover the
 def walk_forward(df: pd.DataFrame, name: str, grid, intraday: bool,
                  train_days: int, oos_days: int, cfg: Dict,
                  ticker: str = "", min_trades: int = 5) -> List[Dict]:
-    """Rolling walk-forward: pick best param on train window, apply on next oos window."""
+    """Rolling walk-forward: pick best param on train window, apply on next oos window.
+
+    Unless cfg["carry_positions"] is False, a position still open at a fold
+    boundary is handed to the next fold instead of being force-closed: the
+    boundary is an artefact of how the history is sliced, not a trading rule.
+    The next fold still starts from the nominal initial capital, adjusted for the
+    cash the carried position already consumed (same accounting the live engine
+    uses when it restores a position after a restart).
+    """
     import time as _time
     n = len(df)
     folds = []
-    i = train_days
-    total = max(0, (n - train_days - oos_days) // oos_days + 1)
+    starts = list(range(train_days, n - oos_days + 1, oos_days))
+    total = len(starts)
+    carry = cfg.get("carry_positions", True)
+    lot_size = cfg.get("lot_size", 1)
+    slippage = cfg.get("slippage_pct", 0.0)
+    point_rub = cfg.get("point_rub", 1.0)
+    capital = cfg.get("initial_capital", DEFAULT_INITIAL_CAPITAL)
+    open_pos = None
     done = 0
     t0 = _time.time()
     last_print = 0.0
-    while i + oos_days <= n:
+    for fold_no, i in enumerate(starts):
+        last_fold = fold_no == total - 1
         train = df.iloc[i - train_days:i].reset_index(drop=True)
         oos = df.iloc[i:i + oos_days].reset_index(drop=True)
         best, best_score = None, -np.inf
         exits = cfg.get("exit_grid", [(cfg["sl_atr"], cfg["tp_atr"])])
         specs = [("atr", sl_a, tp_a) for sl_a, tp_a in exits]
-        specs += [("range", tf, sf) for tf, sf in cfg.get("range_targets", [])]
+        # range_targets are TPfrac:SLfrac pairs, but the spec tuple is (a, b) =
+        # (sl, tp) because the Simulator takes sl_frac=a / tp_frac=b.
+        specs += [("range", sl_f, tp_f) for tp_f, sl_f in cfg.get("range_targets", [])]
         specs += [("pts", sl_p, tp_p) for sl_p, tp_p in cfg.get("pt_targets", [])]
         sell_fee = cfg["fixed_fee"] if cfg.get("fee_selection", False) else 0.0
         sell_comm = cfg["commission"] if cfg.get("fee_selection", False) else 0.0
@@ -936,21 +1030,41 @@ def walk_forward(df: pd.DataFrame, name: str, grid, intraday: bool,
                         fixed_units=cfg.get("fixed_units", 0),
                         day_stop=cfg.get("day_stop", 0.0),
                         longs_only=cfg.get("longs_only", False),
+                        lot_size=lot_size, slippage_pct=slippage,
                         same_day_exit=cfg.get("same_day_exit", False)).run(sig)
                     if m["n_trades"] >= min_trades and m["sharpe"] > best_score:
                         best_score, best = m["sharpe"], (params, kind, a, b, trail)
-        if best is None:
-            i += oos_days
+        if best is None and open_pos is None:
             continue
-        params, kind, a, b, trail = best
-        # warm the OOS signal with real pre-fold history so the first bars of a
-        # fold can trade (windows > fold start are known facts, not look-ahead);
-        # without this the first ~n bars of each fold would produce NaN signals.
-        warm = min(WARMUP, len(train))
-        oos_sig = STRAT_FUNCS[name](
-            pd.concat([train.tail(warm), oos], ignore_index=True), params)
+        if best is None:
+            # No selectable candidate, but a position is still open: run the
+            # window with a flat signal so its stop/target is honoured on time.
+            params, kind, a, b, trail = {}, "atr", cfg["sl_atr"], cfg["tp_atr"], 0.0
+            oos_sig = np.zeros(len(oos), dtype=int)
+            warm = 0
+        else:
+            params, kind, a, b, trail = best
+            # warm the OOS signal with real pre-fold history so the first bars of
+            # a fold can trade (windows > fold start are known facts, not
+            # look-ahead); without this the first ~n bars would be NaN signals.
+            warm = min(WARMUP, len(train))
+            oos_sig = STRAT_FUNCS[name](
+                pd.concat([train.tail(warm), oos], ignore_index=True), params)
+        # The ATR is warmed the same way the signal is - otherwise the fold-local
+        # EWM re-seeds on the fold's first bar and biases stops and sizing.
+        atr_warm = None
+        if warm:
+            atr_warm = compute_atr(
+                pd.concat([train.tail(warm), oos], ignore_index=True),
+                DEFAULT_ATR_PERIOD).to_numpy()[warm:]
+        init_cash = None
+        if open_pos is not None:
+            init_cash = capital - (open_pos["dir"] * open_pos["units"]
+                                   * open_pos["entry"] * point_rub
+                                   + open_pos["open_comm"])
         m = Simulator(
-            oos, eod_flat=intraday, risk_pct=cfg["risk_pct"],
+            oos, atr_series=atr_warm, lot_size=lot_size, slippage_pct=slippage,
+            eod_flat=intraday, risk_pct=cfg["risk_pct"],
             sl_atr=a if kind == "atr" else cfg["sl_atr"],
             tp_atr=b if kind == "atr" else cfg["tp_atr"],
             commission_pct=cfg["commission"],
@@ -966,14 +1080,15 @@ def walk_forward(df: pd.DataFrame, name: str, grid, intraday: bool,
             day_stop=cfg.get("day_stop", 0.0),
             longs_only=cfg.get("longs_only", False),
             same_day_exit=cfg.get("same_day_exit", False)).run(
-            oos_sig[warm:])
+            oos_sig[warm:], initial_position=open_pos, initial_cash=init_cash,
+            close_at_end=last_fold or not carry)
+        open_pos = m["open_position"] if carry else None
         oos_days_n = len(oos["timestamp"].dt.date.unique())
         folds.append({"oos": m,
                       "params": {**params, "kind": kind, "a": a, "b": b,
                                  "trail": trail},
                       "ticker": ticker, "days": oos_days_n,
                       "year": int(oos["timestamp"].iloc[0].year)})
-        i += oos_days
         done = len(folds)
         now = _time.time()
         if done == total or (done % 5 == 0 and now - last_print >= 5.0) or now - last_print >= 60.0:
@@ -1194,8 +1309,21 @@ def main():
                         help="grid of SLpts:TPpts pairs in index points, "
                              "e.g. '3:4,4:6' (fixed-point exit mode)")
     parser.add_argument("--fee-selection", action="store_true",
-                        help="apply commissions/fees ALSO during param selection "
-                             "(default: gross/fee-blind selection)")
+                        help="deprecated: fee-aware selection is now the default")
+    parser.add_argument("--fee-blind-selection", action="store_true",
+                        help="select parameters on GROSS (pre-commission) results, "
+                             "the old default; selection then favours parameters "
+                             "that trade more often than they should")
+    parser.add_argument("--lot", type=int, default=1,
+                        help="exchange lot size; position size is rounded down to "
+                             "a whole number of lots (MOEX trades lots, not shares)")
+    parser.add_argument("--slippage", type=float, default=0.0,
+                        help="adverse slippage per fill, in percent of price "
+                             "(applied to entries and exits alike)")
+    parser.add_argument("--no-carry-positions", action="store_true",
+                        help="force-close an open position at every walk-forward "
+                             "fold boundary (the old behaviour; the boundary is an "
+                             "artefact of slicing, so this manufactures exits)")
     parser.add_argument("--longs-only", action="store_true",
                         help="never open short positions (clip -1 signals to 0)")
     parser.add_argument("--same-day", action="store_true",
@@ -1253,7 +1381,7 @@ def main():
         "tp_atr": args.tp,
         "commission": args.commission,
         "fixed_fee": args.fee,
-        "fee_selection": args.fee_selection,
+        "fee_selection": not args.fee_blind_selection,
         "day_stop": args.day_stop,
         "point_rub": args.point_rub,
         "leverage": args.leverage,
@@ -1261,6 +1389,9 @@ def main():
         "risk_pct": args.risk,
         "longs_only": args.longs_only,
         "same_day_exit": args.same_day,
+        "lot_size": args.lot,
+        "slippage_pct": args.slippage,
+        "carry_positions": not args.no_carry_positions,
         "trail_grid": tuple(float(x) for x in args.trails.split(",")),
     }
     if args.exits is not None:
@@ -1307,7 +1438,9 @@ def main():
         else:
             report_walk(per)
     else:
-        results = [run_instrument(f, intraday=intraday_mode, cfg=cfg) for f in files]
+        results = [run_instrument(f, intraday=intraday_mode, cfg=cfg,
+                                  grids=grids, min_trades=args.min_trades)
+                   for f in files]
         report(results)
 
 

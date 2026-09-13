@@ -122,7 +122,7 @@ public sealed class EngineSupervisor : BackgroundService, IEngineSupervisor
             var all = await _instruments.GetAllAsync(ct).ConfigureAwait(false);
             var wanted = all
                 .Where(i => i.ProcessingStatus == ProcessingStatus.Running
-                            && (!string.IsNullOrWhiteSpace(i.Figi) || !string.IsNullOrWhiteSpace(i.Uid)))
+                            && InstrumentEngine.EffectiveInstrumentId(i).Length > 0)
                 .ToList();
             var wantedIds = wanted.Select(i => i.Id).ToHashSet();
             var existingIds = all.Select(i => i.Id).ToHashSet();
@@ -150,14 +150,30 @@ public sealed class EngineSupervisor : BackgroundService, IEngineSupervisor
                 {
                     if (_engines.TryGetValue(instrument.Id, out var engine))
                     {
-                        if (engine.TinkoffInstrumentId == (instrument.Uid ?? instrument.Figi))
+                        string effectiveId = InstrumentEngine.EffectiveInstrumentId(instrument);
+                        bool sameInstrument = engine.TinkoffInstrumentId == effectiveId;
+                        if (sameInstrument && engine.IsRunning)
                         {
                             continue;
                         }
 
-                        _logger.LogInformation(
-                            "Engine {Ticker} instrument id changed to {NewId}; restarting",
-                            instrument.Ticker, instrument.Uid ?? instrument.Figi);
+                        // An engine whose run task has finished - warm-up threw, the
+                        // history call failed, the subscription ended - used to sit in
+                        // the dictionary forever and never trade again, because this
+                        // loop only ever compared instrument ids.
+                        if (sameInstrument)
+                        {
+                            _logger.LogWarning(
+                                "Engine {Ticker} is no longer running; restarting it",
+                                instrument.Ticker);
+                        }
+                        else
+                        {
+                            _logger.LogInformation(
+                                "Engine {Ticker} instrument id changed to {NewId}; restarting",
+                                instrument.Ticker, effectiveId);
+                        }
+
                         toStop.Add(engine);
                         _engines.Remove(instrument.Id);
                     }

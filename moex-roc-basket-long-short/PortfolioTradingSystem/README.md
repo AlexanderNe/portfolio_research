@@ -80,22 +80,33 @@ completed daily bar only** (no look-ahead):
 - signal `+1` if `ROC > 0.01`, `−1` if `ROC < −0.01`, else `0`
 - ATR = EWM smoothing (alpha = 1/14) of true range
 
-Entry at the next session's open when the prior close produced a signal (in live mode
-the entry price is the open of the first candle received after activation). Sizing:
+Entry at the next session's open when the prior close produced a signal. Sizing:
 
-- `units = floor(risk% · cash / (2·ATR))`, capped by `floor(leverage · cash / notional)`
+- `units = floor(risk% · cash / (2·ATR))`, capped by
+  `floor(leverage · cash / (notional · (1 + commission)))`, then rounded **down to
+  whole exchange lots** (`Instrument.LotSize`)
 - `SL = entry ∓ 2·ATR`, `TP = entry ± 3·ATR`
-- commission `0.04%` per side; SL checked before TP (research convention)
+- commission `0.04%` per side; SL checked before TP (research convention); a
+  candle that opens beyond the level fills at the open
 
-Documented live refinement: intraday SL/TP are also checked on each 1-minute candle
-after the entry candle (research checks daily only). This only adds exits, never
-entries.
+**When an entry is advised.** Only when this session's open was actually observed:
+either the engine saw the previous session end, or its first candle of the session
+falls inside `Strategy:EntryWindowMinutes` (default 15) of the 10:00 Moscow open.
+An engine started or resumed at 14:00 waits for the next session rather than
+advising a fill at a price hours old. An entry is also never advised in a session
+in which a position has already been closed - that price is gone by the time the
+stop or target is hit.
+
+Documented live deviation: intraday SL/TP are also checked on each 1-minute candle
+after the entry candle (research checks daily only). This is not simply "more
+conservative": it also takes winners at the target earlier, so the live trade
+distribution differs from the backtest by an amount that has not been measured.
 
 ## Configuration reference
 
 `Strategy` (defaults = research): `RocBars=5`, `RocThreshold=0.01`, `AtrPeriod=14`,
 `SlAtr=2`, `TpAtr=3`, `RiskPct=10`, `CommissionPct=0.04`, `PointRub=1`, `Leverage=1`,
-`InitialCapital=100000`, `ShortsEnabled=true`.
+`InitialCapital=100000`, `ShortsEnabled=true`, `EntryWindowMinutes=15`.
 
 `Tinkoff`: `ApiUrl`, `AccessToken`, `SandboxMode`, `HistoricMaxBars=700`,
 `ResolveClassCode=TQBR`.
@@ -104,7 +115,10 @@ entries.
 `ReconnectMaxDelaySeconds=60`.
 
 `Admin`: `Username`, `Password`, `Realm`. `BasicAuth` protects the whole app
-(constant-time comparison; credentials never logged).
+(constant-time comparison; credentials never logged). **`Admin:Password` ships
+empty and auth fails closed**: until it is set every request is rejected and
+startup logs an error. `appsettings.Development.json` keeps `admin`/`admin` so a
+local `dotnet run` still works.
 
 ## Admin API
 
@@ -124,6 +138,7 @@ entries.
 | DELETE | `/api/instruments/{id}` | Delete |
 | POST | `/api/instruments/{id}/resolve` | Resolve ticker to T-Invest instrument |
 | POST | `/api/instruments/resolve-all` | Resolve all instruments lacking UID |
+| POST | `/api/instruments/{id}/close` | Close the open position now (optional `?price=`, reason `Manual`) |
 | POST | `/api/instruments/{id}/pause` | Pause engine |
 | POST | `/api/instruments/{id}/resume` | Resume engine |
 | POST | `/api/signals/{id}/resend` | Re-post a logged signal to Telegram (prefixed "duplicate, NOT a new signal") |
@@ -143,9 +158,12 @@ One state per instrument: `Paused` ↔ `Running`.
 
 Tables (EF Core, `EnsureCreated`): `Instruments`, `OpenPositions`, `TradeLogs`,
 `SignalLogs`. Positions and realized PnL survive restarts (cash = initial capital +
-sum of realized PnL). **Because the schema is created with `EnsureCreated`, model
-changes do not migrate an existing database** — recreate the DB when the schema
-changes.
+sum of realized PnL). Opening and closing a position are each one transaction, so a
+crash cannot leave a trade counted *and* its position still open. Deleting an
+instrument cascades to its positions, trades and signals. **Because the schema is
+created with `EnsureCreated`, model changes do not migrate an existing database** —
+recreate the DB when the schema changes. `OpenPositions.InstrumentId` gained a
+UNIQUE index, so an existing database must be recreated after this change.
 
 ## Logging
 
@@ -158,7 +176,12 @@ Logs include warm-up summary (last bar, ROC, signal, ATR), every open/close sign
 
 - Build: `dotnet build PortfolioTradingSystem.slnx` (must be 0 errors / 0 warnings).
 - Unit tests: `PortfolioTradingSystem.Tests` (xUnit) covers `MomentumEngineState`
-  algorithm math; run `dotnet test PortfolioTradingSystem.Tests`. It references only
-  the Domain project — no app state touched.
+  algorithm math, the execution model, `InstrumentEngine` against in-memory fakes,
+  and **parity with the Python simulator** (`ResearchParityTests` replays 300 real
+  SBER bars and compares every trade with `Fixtures/sber_trades.csv`, generated by
+  `strategy_research.py`). Run `dotnet test PortfolioTradingSystem.Tests`. It
+  references Domain and Application; no real broker, database or app state.
+- `Directory.Build.props` sets `TreatWarningsAsErrors` and the .NET analysers, so
+  "0 errors / 0 warnings" is enforced rather than assumed.
 - C# conventions: file-scoped namespaces, records for domain events, no comments
   beyond XML docs for public API.

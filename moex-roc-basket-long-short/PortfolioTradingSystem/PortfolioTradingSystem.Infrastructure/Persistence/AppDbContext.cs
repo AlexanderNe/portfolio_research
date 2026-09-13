@@ -37,7 +37,9 @@ public sealed class AppDbContext : DbContext
         modelBuilder.Entity<OpenPosition>(e =>
         {
             e.HasKey(x => x.Id);
-            e.HasIndex(x => x.InstrumentId);
+            // "one open position per instrument" is the core invariant of the
+            // engine; let the database enforce it rather than trusting callers.
+            e.HasIndex(x => x.InstrumentId).IsUnique();
             e.Property(x => x.Ticker).HasMaxLength(32);
             e.Property(x => x.EntryPrice).HasPrecision(18, 6);
             e.Property(x => x.StopLoss).HasPrecision(18, 6);
