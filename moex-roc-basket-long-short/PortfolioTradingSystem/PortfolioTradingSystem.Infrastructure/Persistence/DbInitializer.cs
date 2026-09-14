@@ -34,6 +34,9 @@ public sealed class DbInitializer : IDbInitializer
             }
 
             var existing = await db.Instruments.Select(x => x.Ticker).ToListAsync(ct).ConfigureAwait(false);
+            if (existing.Any())
+                return;
+
             int added = 0;
             foreach (var ticker in SeedTickers)
             {
