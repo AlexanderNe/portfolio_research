@@ -241,6 +241,15 @@ public static class AdminEndpoints
             decimal total = realized + open;
             decimal pool = all.Count * strategyOptions.Value.InitialCapital;
             decimal pct = pool > 0 ? total / pool * 100m : 0m;
+
+            var byDirection = await tradeLogs.SumAllRealizedPnlByDirectionAsync(ct).ConfigureAwait(false);
+            decimal openLong = metricsList.Where(m => m.PositionState == "long").Sum(m => m.PositionPnl ?? 0m);
+            decimal openShort = metricsList.Where(m => m.PositionState == "short").Sum(m => m.PositionPnl ?? 0m);
+            decimal longs = byDirection.Longs + openLong;
+            decimal shorts = byDirection.Shorts + openShort;
+            decimal longsPct = pool > 0 ? longs / pool * 100m : 0m;
+            decimal shortsPct = pool > 0 ? shorts / pool * 100m : 0m;
+
             return Results.Text(
                 $"Portfolio Trading System\n" +
                 $"instruments: {all.Count} (running: {running})\n" +
@@ -248,7 +257,11 @@ public static class AdminEndpoints
                 $"global state: {(supervisor.IsGloballyRunning ? "running" : "stopped")}\n" +
                 $"metrics tracked: {metricsList.Count}\n" +
                 $"total pnl: {total.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)}\n" +
-                $"total pnl pct: {pct.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)}");
+                $"total pnl pct: {pct.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)}\n" +
+                $"longs pnl: {longs.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)}\n" +
+                $"longs pnl pct: {longsPct.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)}\n" +
+                $"shorts pnl: {shorts.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)}\n" +
+                $"shorts pnl pct: {shortsPct.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)}");
         });
 
         app.MapGet($"{rootPrefix}/metrics", (IMetricsStore metrics) =>

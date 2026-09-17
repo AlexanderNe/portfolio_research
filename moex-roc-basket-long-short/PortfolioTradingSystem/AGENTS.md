@@ -61,6 +61,15 @@ agent, not for end users (see `README.md` for user/developer docs).
   either guard fails `InstrumentEngineTests`.)
 - Entry timestamp = the 1-minute candle's start time (may predate the engine start
   timestamp). The "Opened" log now includes this time.
+- Signal reversal (research "signal_reversal", added to the simulator on
+  2026-09-17): when the last completed bar's signal is OPPOSITE to the open
+  position, the engine closes it at the next session's observed OPEN and re-enters
+  the new direction at the SAME open (the one exception to "no entry on an exit
+  bar"; both fills share the open). Like a normal entry it requires the open to
+  have been observed, and it respects `ShortsEnabled`. The flip is a
+  `TryCloseOnReversal` + `TryOpen` pair inside `ProcessMinuteAsync`, published
+  close-before-open so the unique per-instrument position row is replaced, not
+  duplicated. Parity fixture `Fixtures/sber_trades.csv` exercises 31 such flips.
 - Intraday SL/TP checked only for positions that existed BEFORE the candle.
 - Sizing: `units = floor(risk%·cash/(SlAtr·ATR))`, cap `floor(leverage·cash/notional)`,
   `SL=entry∓SlAtr·ATR`, `TP=entry±TpAtr·ATR`, commission both sides, SL before TP.

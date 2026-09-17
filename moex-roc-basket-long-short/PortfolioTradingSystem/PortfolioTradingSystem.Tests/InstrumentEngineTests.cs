@@ -119,6 +119,86 @@ public class InstrumentEngineTests
     }
 
     [Fact]
+    public async Task OppositeSignalAtSessionOpenFlipsTheOpenPosition()
+    {
+        // Restored LONG position; warm-up signals SHORT (-1). The engine joins at
+        // the Monday open and must close the LONG at that open (signal_reversal)
+        // and re-enter SHORT at the same open - the research flip.
+        var position = new OpenPosition
+        {
+            Ticker = "TST",
+            Direction = SignalDirection.Long,
+            Units = 500,
+            EntryPrice = 100m,
+            StopLoss = 82m,
+            TakeProfit = 127m,
+            AtrAtEntry = 9m,
+            OpenCommission = 20m,
+            EntryTime = new DateTimeOffset(2026, 1, 9, 10, 0, 0, Msk),
+        };
+
+        await using var h = new EngineHarness(Atr9Bars(longSignal: false));
+        h.Positions.Current = position;
+        h.TradeLogs.Realized = 1_234m;
+        await h.StartAsync();
+
+        await h.FeedAsync(Minute(12, 10, 0, 100m, 101m, 99m, 100m));
+
+        var close = Assert.Single(h.Journal.Closes);
+        Assert.Equal(ExitReason.SignalReversal, close.ExitReason);
+        Assert.Equal(100m, close.ExitPrice);
+
+        var open = Assert.Single(h.Journal.Opens);
+        Assert.Equal(SignalDirection.Short, open.Direction);
+        Assert.Equal(100m, open.EntryPrice);
+
+        var current = h.Positions.Current;
+        Assert.NotNull(current);
+        Assert.Equal(SignalDirection.Short, current.Direction);
+        Assert.Equal(100m, current.EntryPrice);
+    }
+
+    [Fact]
+    public async Task ResentOpeningCandleDoesNotFlipTwiceOrStopTheFlippedLeg()
+    {
+        var position = new OpenPosition
+        {
+            Ticker = "TST",
+            Direction = SignalDirection.Long,
+            Units = 500,
+            EntryPrice = 100m,
+            StopLoss = 82m,
+            TakeProfit = 127m,
+            AtrAtEntry = 9m,
+            OpenCommission = 20m,
+            EntryTime = new DateTimeOffset(2026, 1, 9, 10, 0, 0, Msk),
+        };
+
+        await using var h = new EngineHarness(Atr9Bars(longSignal: false));
+        h.Positions.Current = position;
+        h.TradeLogs.Realized = 1_234m;
+        await h.StartAsync();
+
+        await h.FeedAsync(Minute(12, 10, 0, 100m, 101m, 99m, 100m));
+        Assert.Single(h.Journal.Closes);
+        Assert.Single(h.Journal.Opens);
+
+        // The stream re-sends the opening minute as it develops. The 10:00 low of 20
+        // would stop the just-flipped SHORT at its TP (73) against the very bar it
+        // entered on. It must be ignored: no second flip (signal consumed) and the
+        // new leg is not checked against its own opening bar.
+        await h.FeedAsync(Minute(12, 10, 0, 100m, 101m, 20m, 99m));
+
+        Assert.Single(h.Journal.Closes);
+        Assert.Equal(ExitReason.SignalReversal, h.Journal.Closes[0].ExitReason);
+        Assert.Single(h.Journal.Opens);
+        var current = h.Positions.Current;
+        Assert.NotNull(current);
+        Assert.Equal(SignalDirection.Short, current.Direction);
+        Assert.Equal(100m, current.EntryPrice);
+    }
+
+    [Fact]
     public async Task ManualCloseFlattensAndRecordsTheTrade()
     {
         await using var h = new EngineHarness(Atr9Bars(longSignal: true));

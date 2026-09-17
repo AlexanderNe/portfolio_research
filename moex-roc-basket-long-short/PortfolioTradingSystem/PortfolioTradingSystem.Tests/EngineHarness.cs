@@ -77,6 +77,10 @@ internal sealed class FakeTradeLogs : ITradeLogRepository
 
     public decimal Realized { get; set; }
 
+    public decimal RealizedLongs { get; set; }
+
+    public decimal RealizedShorts { get; set; }
+
     public Task AddAsync(TradeLogEntry entry, CancellationToken ct)
     {
         Entries.Add(entry);
@@ -92,6 +96,9 @@ internal sealed class FakeTradeLogs : ITradeLogRepository
     public Task<decimal> SumRealizedPnlAsync(Guid instrumentId, CancellationToken ct) => Task.FromResult(Realized);
 
     public Task<decimal> SumAllRealizedPnlAsync(CancellationToken ct) => Task.FromResult(Realized);
+
+    public Task<RealizedPnlByDirection> SumAllRealizedPnlByDirectionAsync(CancellationToken ct) =>
+        Task.FromResult(new RealizedPnlByDirection(RealizedLongs, RealizedShorts));
 
     public Task<IReadOnlyList<TradeLogEntry>> GetAllAsync(CancellationToken ct) =>
         Task.FromResult<IReadOnlyList<TradeLogEntry>>(Entries);

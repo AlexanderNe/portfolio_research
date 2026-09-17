@@ -80,22 +80,29 @@ public class ResearchParityTests
     }
 
     /// <summary>
-    /// One daily bar of the research loop: manage the open position against this bar,
-    /// then (and only if that did not just close it) enter at this bar's open on the
-    /// previous bar's signal, then finalize the bar.
+    /// One daily bar of the research loop: manage the open position against this bar
+    /// (signal_reversal first - close at the open - then SL/TP), then - only if that
+    /// did not just close it OR it was a reversal flip - enter at this bar's open on
+    /// the previous bar's signal, then finalize the bar. This mirrors strategy_research.py
+    /// exactly, including the reversal exception to the no-entry-on-exit-bar rule.
     /// </summary>
     private static List<TradeClosedEvent> Replay(IReadOnlyList<Candle> bars, MomentumEngineState state)
     {
         var trades = new List<TradeClosedEvent>();
         foreach (var bar in bars)
         {
-            var closed = state.CheckStop(bar.High, bar.Low, bar.Time, bar.Open);
+            var closed = state.TryCloseOnReversal(bar.Open, bar.Time);
+            if (closed is null)
+            {
+                closed = state.CheckStop(bar.High, bar.Low, bar.Time, bar.Open);
+            }
+
             if (closed is not null)
             {
                 trades.Add(closed);
             }
 
-            if (closed is null)
+            if (closed is null || closed.Reason == ExitReason.SignalReversal)
             {
                 state.TryOpen(bar.Open, bar.Time);
             }
@@ -139,20 +146,32 @@ public class ResearchParityTests
     }
 
     [Fact]
-    public void NoTradeEntersOnABarThatAlreadyExited()
+    public void TradeNeverEntersOnAnExitBarUnlessItIsAReversalFlip()
     {
         var bars = LoadBars();
         var trades = Replay(bars, new MomentumEngineState(ResearchOptions(), "SBER"));
 
         // The defect this guards against: an exit and an entry sharing one bar, the
         // entry filled at that bar's open - a price that was gone by the time the
-        // stop or target was hit.
+        // stop or target was hit. The ONE exception is a signal_reversal flip, whose
+        // close and re-entry both fill at the same open.
         for (int i = 1; i < trades.Count; i++)
         {
-            Assert.True(
-                trades[i].EntryTime > trades[i - 1].ExitTime,
-                $"trade #{i} enters at {trades[i].EntryTime:yyyy-MM-dd}, "
-                + $"the previous one exited at {trades[i - 1].ExitTime:yyyy-MM-dd}");
+            if (trades[i].EntryTime <= trades[i - 1].ExitTime)
+            {
+                Assert.True(
+                    trades[i - 1].Reason == ExitReason.SignalReversal,
+                    $"trade #{i} enters at {trades[i].EntryTime:yyyy-MM-dd}, "
+                    + $"the previous one exited at {trades[i - 1].ExitTime:yyyy-MM-dd} "
+                    + $"with reason {trades[i - 1].Reason}");
+            }
+            else
+            {
+                Assert.True(
+                    trades[i].EntryTime > trades[i - 1].ExitTime,
+                    $"trade #{i} enters at {trades[i].EntryTime:yyyy-MM-dd}, "
+                    + $"the previous one exited at {trades[i - 1].ExitTime:yyyy-MM-dd}");
+            }
         }
     }
 

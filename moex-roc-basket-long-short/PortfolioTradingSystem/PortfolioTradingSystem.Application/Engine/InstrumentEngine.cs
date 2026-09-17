@@ -434,28 +434,58 @@ public sealed class InstrumentEngine : IAsyncDisposable
                 _lastMinuteVolume = minute.Volume;
             }
 
+            // The live feed re-sends the session's opening minute as it develops,
+            // so "this is the opening bar" is a property of the bar, not the call.
+            bool sessionOpeningBar = _sessionBar is { } sb && sb.Time == minute.Time;
+
             // Entry at today's open when yesterday's close produced a signal
-            // (research: entry at bar i open when signals[i-1] != 0).
+            // (research: entry at bar i open when signals[i-1] != 0), and the
+            // signal_reversal FLIP: when that signal is OPPOSITE to a position
+            // that was already open, close it at the open and re-enter the new
+            // direction at the same open (python: close reason "signal_reversal" -
+            // the one exception to "no entry on an exit bar", both fills share
+            // the open, so the engine must do the same).
             //  * not after an exit in the same session - the position was still open
             //    at that open, so the price is gone by the time the stop/target hits;
             //  * not at all unless this session's open was actually observed - an
             //    engine that joined at 14:00 cannot advise a fill at the 10:00 open.
-            if (!positionExistedBeforeThisCandle && !_enteredThisSession
-                && !_exitedThisSession && _sessionOpenObserved && _sessionBar is { } bar)
+            if (_sessionOpenObserved && _sessionBar is { } bar && sessionOpeningBar)
             {
-                opened = _state.TryOpen(bar.Open, bar.Time);
-                if (opened is not null)
+                if (positionExistedBeforeThisCandle)
                 {
-                    _enteredThisSession = true;
-                    opened.InstrumentId = InstrumentId;
-                    opened.Ticker = Ticker;
+                    closed = _state.TryCloseOnReversal(bar.Open, bar.Time);
+                    if (closed is not null)
+                    {
+                        _exitedThisSession = true;
+                        opened = _state.TryOpen(bar.Open, bar.Time);
+                        if (opened is not null)
+                        {
+                            _enteredThisSession = true;
+                            opened.InstrumentId = InstrumentId;
+                            opened.Ticker = Ticker;
+                        }
+                    }
+                }
+                else if (!_enteredThisSession && !_exitedThisSession)
+                {
+                    opened = _state.TryOpen(bar.Open, bar.Time);
+                    if (opened is not null)
+                    {
+                        _enteredThisSession = true;
+                        opened.InstrumentId = InstrumentId;
+                        opened.Ticker = Ticker;
+                    }
                 }
             }
 
             // Intraday SL/TP check (only for positions that existed before this
             // candle, mirroring the research ordering where a just-opened bar is
-            // not exited against its own range).
-            if (positionExistedBeforeThisCandle)
+            // not exited against its own range; a flip already closed at the open,
+            // so it is not also stopped against the opening minute's range). The
+            // same rule extends to re-sent copies of the bar a position entered on:
+            // the position was not "before" that candle.
+            if (positionExistedBeforeThisCandle && closed?.Reason != ExitReason.SignalReversal
+                && !(sessionOpeningBar && _enteredThisSession))
             {
                 closed = _state.CheckStop(minute.High, minute.Low, minute.Time, minute.Open);
                 if (closed is not null)
@@ -481,6 +511,15 @@ public sealed class InstrumentEngine : IAsyncDisposable
             }
         }
 
+        if (closed is not null)
+        {
+            // Close is applied before open: a signal_reversal flip produces BOTH
+            // events on one candle, and the position table is unique per
+            // instrument - switching the order would insert the new position
+            // while the old leg is still stored.
+            await PublishClosedAsync(closed, ct).ConfigureAwait(false);
+        }
+
         if (opened is not null)
         {
             var e = new TradeOpenedEvent(
@@ -488,11 +527,6 @@ public sealed class InstrumentEngine : IAsyncDisposable
                 opened.EntryPrice, opened.StopLoss, opened.TakeProfit,
                 opened.AtrAtEntry, opened.EntryTime);
             await PublishOpenedAsync(opened, e, ct).ConfigureAwait(false);
-        }
-
-        if (closed is not null)
-        {
-            await PublishClosedAsync(closed, ct).ConfigureAwait(false);
         }
 
         EngineStateSnapshot snapshot;

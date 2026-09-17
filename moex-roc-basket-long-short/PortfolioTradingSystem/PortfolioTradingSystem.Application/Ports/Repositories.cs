@@ -51,9 +51,15 @@ public interface ITradeLogRepository
     /// <summary>Sum of net PnL of all closed trades across all instruments (portfolio total).</summary>
     Task<decimal> SumAllRealizedPnlAsync(CancellationToken ct);
 
+    /// <summary>Sum of net PnL of all closed trades, split into long legs and short legs (portfolio totals).</summary>
+    Task<RealizedPnlByDirection> SumAllRealizedPnlByDirectionAsync(CancellationToken ct);
+
     /// <summary>All closed trades across all instruments, ordered by exit time ascending (equity curve).</summary>
     Task<IReadOnlyList<TradeLogEntry>> GetAllAsync(CancellationToken ct);
 }
+
+/// <summary>Realized PnL of closed trades split by position direction.</summary>
+public sealed record RealizedPnlByDirection(decimal Longs, decimal Shorts);
 
 /// <summary>One page of signal-log entries, newest first.</summary>
 public sealed record SignalLogPage(int Total, int Page, int PageSize, IReadOnlyList<SignalLogEntry> Items);

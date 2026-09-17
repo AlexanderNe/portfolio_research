@@ -23,6 +23,24 @@
   .statusline a.pill:hover { background: #223047; }
   .statusline .pill.up { color: #7fd18a; border-color: #2e7d32; }
   .statusline .pill.down { color: #e88f8f; border-color: #a83232; }
+  .dropdown { position: relative; }
+  .dropdown-menu {
+    display: none; position: absolute; right: 0; top: calc(100% + 6px); min-width: 180px;
+    background: #1c2431; border: 1px solid #3d4a5f; border-radius: 8px; padding: 6px;
+    z-index: 40; box-shadow: 0 8px 24px rgba(0, 0, 0, .45);
+    flex-direction: column; gap: 2px;
+  }
+  .dropdown.open .dropdown-menu { display: flex; }
+  .dropdown-item {
+    display: block; width: 100%; text-align: left; background: transparent; border: none;
+    border-radius: 6px; color: #dbe2ec; padding: 8px 10px; font-size: 13px; cursor: pointer;
+  }
+  .dropdown-item:hover { background: #2b3748; }
+  .dropdown-item.danger { color: #e88f8f; }
+  .dropdown-item.danger:hover { background: #4a1d1d; }
+  .dropdown-item.ok { color: #7fd18a; }
+  .dropdown-item.ok:hover { background: #1d3b26; }
+  .dropdown-item:disabled { opacity: .5; cursor: not-allowed; }
   .btn {
     background: #2b3748; cursor: pointer; border: 1px solid #3d4a5f; border-radius: 6px;
     color: #dbe2ec; padding: 6px 12px; font-size: 13px;
@@ -40,6 +58,8 @@
   th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid #232c3b; vertical-align: top; }
   th { color: #8fa3bf; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; }
   tr:hover td { background: #1e2736; }
+  #rows tr { cursor: pointer; }
+  #rows .row-actions { cursor: default; }
   .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; white-space: nowrap; }
   .badge.green { background: #1d3b26; color: #7fd18a; }
   .badge.gray  { background: #2d3440; color: #9aa7b8; }
@@ -54,13 +74,33 @@
   .row-actions .btn { padding: 3px 9px; font-size: 12px; }
   .detail { display: none; background: #141b27; margin-top: 4px; padding: 10px; border: 1px solid #2c3648; border-radius: 6px; }
   .detail.open { display: block; }
-  .tabs { display: flex; gap: 6px; margin-bottom: 14px; }
+  .pnlbar { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 14px; }
+  .pnlcard {
+    background: linear-gradient(180deg, #1a2230, #161d29);
+    border: 1px solid #2c3648; border-radius: 8px;
+    padding: 10px 16px; min-width: 160px;
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .pnlcard .lbl {
+    color: #8fa3bf; font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: .05em;
+  }
+  .pnlcard .valrow { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+  .pnlcard .val { font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .pnlcard .pct { font-size: 12px; font-weight: 600; opacity: .85; }
+  .pnlcard.total { border-color: #3d4a5f; }
+  .pnlcard.total .val { font-size: 18px; }
+  .pnlcard .val a { text-decoration: none; color: inherit; }
+  .pnlcard.up .val { color: #7fd18a; }
+  .pnlcard.down .val { color: #e88f8f; }
+  .tabs { display: flex; gap: 8px; margin-bottom: 14px; }
   .tab {
+    flex: 0 0 auto; min-width: 150px; text-align: center;
     background: transparent; border: 1px solid #3d4a5f; color: #9fb0c8; cursor: pointer;
-    padding: 8px 18px; font-size: 13px; border-radius: 8px 8px 0 0;
+    padding: 8px 18px; font-size: 13px; border-radius: 8px;
   }
   .tab:hover { background: #1c2431; color: #dbe2ec; }
-  .tab.active { background: #1a2230; color: #fff; border-bottom-color: #1a2230; }
+  .tab.active { background: #1a2230; color: #fff; border-color: #4a5a72; }
   .filterbox input[type="text"] {
     background: #131820; border: 1px solid #3d4a5f; color: #dbe2ec; border-radius: 5px;
     padding: 6px 8px; font-size: 13px; width: 190px;
@@ -125,15 +165,42 @@
     <span class="pill" id="globalState">state: -</span>
     <span class="pill" id="engineCount">engines: -</span>
     <span class="pill" id="counts">instruments: -</span>
-    <a class="pill" id="totalPnl" href="/equity" target="_blank" rel="noopener" title="Open total equity chart">PnL: -</a>
-    <button class="btn danger" onclick="control('stop', this)">Stop all</button>
-    <button class="btn ok" onclick="control('reset', this)" title="reinitialize modules, clear caches, reload instruments">Reset state</button>
-    <button class="btn primary" onclick="control('resume', this)">Resume all</button>
-    <button class="btn" onclick="resolveAll(this)">Resolve all</button>
+    <div class="dropdown" id="actionsDropdown">
+      <button class="btn" id="actionsBtn" aria-haspopup="true" aria-expanded="false" onclick="toggleActions(event)">Actions &#9662;</button>
+      <div class="dropdown-menu" id="actionsMenu" role="menu">
+        <button class="dropdown-item danger" role="menuitem" onclick="control('stop', this)">Stop all</button>
+        <button class="dropdown-item" role="menuitem" onclick="control('reset', this)" title="reinitialize modules, clear caches, reload instruments">Reset state</button>
+        <button class="dropdown-item ok" role="menuitem" onclick="control('resume', this)">Resume all</button>
+        <button class="dropdown-item" role="menuitem" onclick="resolveAll(this)">Resolve all</button>
+      </div>
+    </div>
   </div>
   <div class="errorbox" id="errorBox"></div>
 </header>
 <main>
+  <div class="pnlbar">
+    <div class="pnlcard total" id="pnlCardTotal">
+      <span class="lbl">Total PnL</span>
+      <div class="valrow">
+        <a class="val" id="pnlTotal" href="/equity" target="_blank" rel="noopener" title="Open total equity chart">—</a>
+        <span class="val pct" id="pnlTotalPct">—</span>
+      </div>
+    </div>
+    <div class="pnlcard" id="pnlCardLongs">
+      <span class="lbl">Longs PnL</span>
+      <div class="valrow">
+        <span class="val" id="pnlLongs">—</span>
+        <span class="val pct" id="pnlLongsPct">—</span>
+      </div>
+    </div>
+    <div class="pnlcard" id="pnlCardShorts">
+      <span class="lbl">Shorts PnL</span>
+      <div class="valrow">
+        <span class="val" id="pnlShorts">—</span>
+        <span class="val pct" id="pnlShortsPct">—</span>
+      </div>
+    </div>
+  </div>
   <nav class="tabs">
     <button class="tab active" data-view="instruments" onclick="showView('instruments')">Instruments</button>
     <button class="tab" data-view="signals" onclick="showView('signals')">Signals</button>
@@ -296,19 +363,41 @@ async function refresh() {
     const cntMatch = text.match(/instruments:\s*(\d+) \(running: (\d+)\)/);
     const pnlMatch = text.match(/total pnl:\s*([-+]?[0-9.]+)/);
     const pnlPctMatch = text.match(/total pnl pct:\s*([-+]?[0-9.]+)/);
+    const longsMatch = text.match(/longs pnl:\s*([-+]?[0-9.]+)/);
+    const shortsMatch = text.match(/shorts pnl:\s*([-+]?[0-9.]+)/);
+    const longsPctMatch = text.match(/longs pnl pct:\s*([-+]?[0-9.]+)/);
+    const shortsPctMatch = text.match(/shorts pnl pct:\s*([-+]?[0-9.]+)/);
     document.getElementById("globalState").textContent = "state: " + (stateMatch ? stateMatch[1] : "?");
     document.getElementById("engineCount").textContent = "engines: " + (engMatch ? engMatch[1] : "?");
     document.getElementById("counts").textContent = "instruments: " + (cntMatch ? cntMatch[1] : "?") + " (running: " + (cntMatch ? cntMatch[2] : "?") + ")";
-    const pnlEl = document.getElementById("totalPnl");
-    if (pnlMatch) {
-      const pnlVal = parseFloat(pnlMatch[1]);
-      const pnlPct = pnlPctMatch ? parseFloat(pnlPctMatch[1]) : null;
-      pnlEl.textContent = "PnL: " + fmtMoney(pnlVal) + " RUB" + (pnlPct !== null ? " (" + fmtPct(pnlPct) + ")" : "");
-      pnlEl.classList.toggle("up", pnlVal >= 0);
-      pnlEl.classList.toggle("down", pnlVal < 0);
-    } else {
-      pnlEl.textContent = "PnL: ?";
+    function setPnlCard(id, v) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.classList.remove("up", "down");
+      if (v !== null && v !== undefined && !isNaN(v)) el.classList.add(v >= 0 ? "up" : "down");
     }
+
+    const totalEl = document.getElementById("pnlTotal");
+    const pctEl = document.getElementById("pnlTotalPct");
+    const longsEl = document.getElementById("pnlLongs");
+    const shortsEl = document.getElementById("pnlShorts");
+    const longsPctEl = document.getElementById("pnlLongsPct");
+    const shortsPctEl = document.getElementById("pnlShortsPct");
+    if (pnlMatch) {
+      totalEl.textContent = fmtMoney(parseFloat(pnlMatch[1])) + " RUB";
+      pctEl.textContent = pnlPctMatch ? fmtPct(parseFloat(pnlPctMatch[1])) : "—";
+      setPnlCard("pnlCardTotal", parseFloat(pnlMatch[1]));
+    } else {
+      totalEl.textContent = "—";
+      pctEl.textContent = "—";
+      setPnlCard("pnlCardTotal", null);
+    }
+    longsEl.textContent = longsMatch ? fmtMoney(parseFloat(longsMatch[1])) + " RUB" : "—";
+    shortsEl.textContent = shortsMatch ? fmtMoney(parseFloat(shortsMatch[1])) + " RUB" : "—";
+    longsPctEl.textContent = longsPctMatch ? fmtPct(parseFloat(longsPctMatch[1])) : "—";
+    shortsPctEl.textContent = shortsPctMatch ? fmtPct(parseFloat(shortsPctMatch[1])) : "—";
+    setPnlCard("pnlCardLongs", longsMatch ? parseFloat(longsMatch[1]) : null);
+    setPnlCard("pnlCardShorts", shortsMatch ? parseFloat(shortsMatch[1]) : null);
 
     const views = await api("/api/instruments");
     instruments = views.map(v => Object.assign({}, v.instrument, { metrics: v.metrics || null }));
@@ -339,7 +428,7 @@ function renderRows() {
     const hasErr = m && m.lastError ? ' title="' + esc(m.lastError) + '"' : "";
     const future = instr.futureTicker ? instr.futureTicker + (instr.futureFigi ? " (" + instr.futureFigi + ")" : "") : "";
     const isOpen = expandedTicker === instr.ticker;
-    return '<tr>' +
+    return '<tr onclick="actions.expand(\'' + instr.id + '\')">' +
       '<td data-label="Ticker"><b>' + esc(instr.ticker) + '</b></td>' +
       '<td data-label="Name">' + esc(instr.name || "") + '</td>' +
       '<td data-label="Status">' + stateBadges(instr) + '</td>' +
@@ -350,14 +439,16 @@ function renderRows() {
       '<td data-label="ROC / ATR" class="mono">' + rocAtr + '</td>' +
       '<td data-label="Position">' + posState + posPnl + posSince + (m && m.pendingSignal !== 0 && m.pendingSignal ? " · signal " + (m.pendingSignal > 0 ? "L" : "S") : "") + '</td>' +
       '<td data-label="Actions" class="row-actions">' +
-        '<button class="btn" onclick="actions.expand(\'' + instr.id + '\')">Detail</button>' +
-        '<button class="btn" onclick="window.open(\'/chart?id=' + instr.id + '\', \'_blank\')">Chart</button>' +
+        '<button class="btn" title="Open chart in a new tab" onclick="event.stopPropagation(); window.open(\'/chart?id=' + instr.id + '\', \'_blank\')">Chart</button>' +
+      '</td></tr>' +
+      (isOpen ? '<tr id="detail-' + instr.ticker + '"><td colspan="9"><div class="detail open" id="detailBox-' + instr.ticker + '">' +
+        '<div class="row-actions" style="margin-bottom:10px">' +
         '<button class="btn" onclick="actions.pause(\'' + instr.id + '\', this)">' + (instr.processingStatus === "Running" ? "Pause" : "Resume") + '</button>' +
         '<button class="btn" onclick="actions.resolve(\'' + instr.id + '\')">Resolve</button>' +
         '<button class="btn" onclick="actions.edit(\'' + instr.id + '\')">' + (editState && editState.ticker === instr.ticker ? "Cancel edit" : "Edit") + '</button>' +
         '<button class="btn danger" onclick="actions.del(\'' + instr.id + '\', \'' + esc(instr.ticker) + '\')">Delete</button>' +
-      '</td></tr>' +
-      (isOpen ? '<tr id="detail-' + instr.ticker + '"><td colspan="9"><div class="detail open" id="detailBox-' + instr.ticker + '">' +
+        '<button class="btn" onclick="actions.expand(\'' + instr.id + '\')">Collapse</button>' +
+        '</div>' +
         (editState && editState.ticker === instr.ticker ? editFormHtml(instr) : "") +
         '<div class="grid2">' +
         kv("Engine status", m ? m.status : "no engine") +
@@ -507,7 +598,29 @@ async function dangerousButton(btn, fn) {
   finally { btn.disabled = false; }
 }
 
+const actionsDropdown = document.getElementById("actionsDropdown");
+const actionsBtn = document.getElementById("actionsBtn");
+
+function toggleActions(e) {
+  if (e) e.stopPropagation();
+  const open = actionsDropdown.classList.toggle("open");
+  actionsBtn.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+function closeActions() {
+  actionsDropdown.classList.remove("open");
+  actionsBtn.setAttribute("aria-expanded", "false");
+}
+
+document.addEventListener("click", e => {
+  if (!actionsDropdown.contains(e.target)) closeActions();
+});
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape") closeActions();
+});
+
 async function control(action, btn) {
+  closeActions();
   if (action === "stop" && !confirm("Stop ALL instrument engines? Running instruments will be paused.")) return;
   await dangerousButton(btn, async () => {
     await api("/api/control/" + action, { method: "POST" });
@@ -517,6 +630,7 @@ async function control(action, btn) {
 }
 
 async function resolveAll(btn) {
+  closeActions();
   await dangerousButton(btn, async () => {
     try {
       const res = await api("/api/instruments/resolve-all", { method: "POST" });

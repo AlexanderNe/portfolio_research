@@ -188,6 +188,18 @@ public sealed class EfTradeLogRepository : ITradeLogRepository
             .SumAsync(x => (decimal?)x.PnlRub, ct).ConfigureAwait(false) ?? 0m;
     }
 
+    public async Task<RealizedPnlByDirection> SumAllRealizedPnlByDirectionAsync(CancellationToken ct)
+    {
+        await using var db = await _factory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        decimal longs = await db.TradeLogs.AsNoTracking()
+            .Where(x => x.Direction == SignalDirection.Long)
+            .SumAsync(x => (decimal?)x.PnlRub, ct).ConfigureAwait(false) ?? 0m;
+        decimal shorts = await db.TradeLogs.AsNoTracking()
+            .Where(x => x.Direction == SignalDirection.Short)
+            .SumAsync(x => (decimal?)x.PnlRub, ct).ConfigureAwait(false) ?? 0m;
+        return new RealizedPnlByDirection(longs, shorts);
+    }
+
     public async Task<IReadOnlyList<TradeLogEntry>> GetAllAsync(CancellationToken ct)
     {
         await using var db = await _factory.CreateDbContextAsync(ct).ConfigureAwait(false);

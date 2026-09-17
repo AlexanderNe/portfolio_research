@@ -408,9 +408,11 @@ function showTipAt(mx, my) {
 }
 
 cv.addEventListener("mousemove", e => {
-  if (panning) { tip.style.display = "none"; return; }
   const rect = cv.getBoundingClientRect();
-  showTipAt(e.clientX - rect.left, e.clientY - rect.top);
+  const mx = e.clientX - rect.left;
+  if (!panning) cv.style.cursor = mx < PAD.l ? "ns-resize" : "";
+  if (panning) { tip.style.display = "none"; return; }
+  showTipAt(mx, e.clientY - rect.top);
 });
 
 cv.addEventListener("mouseleave", () => { tip.style.display = "none"; });
@@ -422,7 +424,9 @@ cv.addEventListener("wheel", e => {
   const my = e.clientY - rect.top;
   const factor = e.deltaY > 0 ? 1.15 : 1 / 1.15;
   tip.style.display = "none";
-  if (e.shiftKey) zoomVertical(my, factor); else zoomHorizontal(mx, factor);
+  // Scrolling on the price axis (left gutter) scales the price range; anywhere
+  // else it scales time. Shift remains the axis-independent shortcut for price.
+  if (mx < PAD.l || e.shiftKey) zoomVertical(my, factor); else zoomHorizontal(mx, factor);
 }, { passive: false });
 
 document.getElementById("btnReset").onclick = () => {
@@ -499,8 +503,16 @@ cv.addEventListener("touchmove", e => {
     const midY = (t[0].clientY + t[1].clientY) / 2;
     const rect = cv.getBoundingClientRect();
     const factor = gesture.dist > 0 ? gesture.dist / dist : 1;
-    applyHorizontal(midX - rect.left, factor);
-    applyVertical(midY - rect.top, factor);
+    const fx = midX - rect.left;
+    const fy = midY - rect.top;
+    // Pinch on the price axis scales price only (mirrors the wheel over the axis);
+    // a pinch over the plot keeps the usual two-axis zoom.
+    if (fx < PAD.l) {
+      applyVertical(fy, factor);
+    } else {
+      applyHorizontal(fx, factor);
+      applyVertical(fy, factor);
+    }
     panBy(midX - gesture.midX, midY - gesture.midY);
     render();
     gesture.dist = dist;

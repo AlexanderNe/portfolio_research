@@ -266,6 +266,38 @@ public sealed class MomentumEngineState
         return exit is null ? null : ClosePosition(exit.Value, reason, time);
     }
 
+    /// <summary>
+    /// Research "signal_reversal": when the last completed bar's signal points
+    /// OPPOSITE to the open position, close it at the given open so the engine
+    /// can re-enter the new direction at the same open (python: close reason
+    /// "signal_reversal" at the bar open - the one exception to
+    /// "no entry on an exit bar", because both fills share the same open).
+    /// The re-entry is a separate <see cref="TryOpen"/> call at the same price.
+    /// Returns null when no reversal applies (no position / no opposite signal /
+    /// shorts disabled). Mirrors the python gates: same signal, same entry
+    /// conditions, same shorts rule.
+    /// </summary>
+    public TradeClosedEvent? TryCloseOnReversal(decimal open, DateTimeOffset time)
+    {
+        var p = Position;
+        if (p is null || !IsWarmedUp || Atr <= 0 || open <= 0)
+        {
+            return null;
+        }
+
+        if (PendingSignal is not { } sig || sig == 0 || sig == (int)p.Direction)
+        {
+            return null;
+        }
+
+        if (sig < 0 && !_o.ShortsEnabled)
+        {
+            return null;
+        }
+
+        return ClosePosition(open, ExitReason.SignalReversal, time);
+    }
+
     /// <summary>Close the open position at the given price (manual/system/intraday).</summary>
     public TradeClosedEvent ClosePosition(decimal price, ExitReason reason, DateTimeOffset time)
     {
