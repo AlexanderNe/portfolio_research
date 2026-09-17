@@ -83,6 +83,9 @@ passed via environment variables (`__` separates sections), not committed:
 | `Telegram__Enabled` | `true` |
 | `Telegram__BotToken` | Bot token |
 | `Telegram__ChannelId` | e.g. `@channel` |
+| `Telegram__ProxyAddress` | HTTP proxy for outbound Telegram requests (e.g. `http://10.0.0.5:3128`). Empty = direct connection |
+| `Telegram__ProxyUsername` | Proxy auth username (optional; used only when `ProxyAddress` is set) |
+| `Telegram__ProxyPassword` | Proxy auth password (optional; used only when `ProxyAddress` is set, never logged) |
 | `Database__ConnectionString` | See section 2 |
 | `Admin__Username` / `Admin__Password` | Admin panel credentials (Basic Auth). **Required**: auth fails closed while the password is empty. |
 
@@ -136,6 +139,9 @@ Tinkoff__AccessToken=<token>
 Telegram__Enabled=true
 Telegram__BotToken=<token>
 Telegram__ChannelId=@channel
+Telegram__ProxyAddress=http://<proxy-host>:<port>
+Telegram__ProxyUsername=<proxy-user>
+Telegram__ProxyPassword=<proxy-password>
 Admin__Username=admin
 Admin__Password=<admin-password>
 EOF

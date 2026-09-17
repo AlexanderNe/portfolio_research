@@ -48,7 +48,15 @@ e.g. `Tinkoff__AccessToken`):
   "SandboxMode": false,
   "ResolveClassCode": "TQBR"   // MOEX equities main board; empty = any class
 },
-"Telegram": { "Enabled": true, "BotToken": "...", "ChannelId": "@channel" }
+"Telegram": {
+  "Enabled": true,
+  "BotToken": "...",
+  "ChannelId": "@channel",
+  // optional HTTP proxy for outbound Telegram requests (leave empty for direct):
+  "ProxyAddress": "",
+  "ProxyUsername": "",
+  "ProxyPassword": ""
+}
 ```
 
 On first run the schema is created (`EnsureCreated`) and the 39 research-basket

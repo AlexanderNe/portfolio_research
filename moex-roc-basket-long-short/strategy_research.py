@@ -13,6 +13,10 @@ Methodology (to not fool ourselves):
   * a bar that produced an exit can NOT also produce an entry: the position was
     still open at that bar's open, so re-entering there would be a fill at a
     price that no longer exists once the stop/target is hit;
+  * an OPPOSITE signal while a position is open flips it at the NEXT bar's open:
+    close the old leg at that open (reason "signal_reversal") and open the new
+    direction at the same open - the same fill timing as a normal entry, so it is
+    exempt from the "no entry on an exit bar" rule (both fills share the open);
   * a bar opening beyond a level fills at the OPEN (stops gap through);
   * if both SL and TP are hit in the same bar, SL wins (conservative).
 """
@@ -214,6 +218,7 @@ class Simulator:
 
         for i in range(n_bars):
             exited_this_bar = False
+            reversal_exit = False
             ts = ts_list[i]
             op = op_arr[i]
             hi = hi_arr[i]
@@ -230,7 +235,19 @@ class Simulator:
             if position is not None:
                 exit_price = None
                 reason = None
-                if self.trail_atr > 0:
+                # Signal reversal: the previous bar's close signalled the OPPOSITE
+                # direction to the open position. Close at THIS bar's open (the
+                # entry-reverse block below will re-enter the new direction at the
+                # same open, keeping fill timing identical to a normal entry).
+                if (i > 0 and signals[i - 1] != 0
+                        and signals[i - 1] != position["dir"]
+                        and can_enter[i]
+                        and (signals[i - 1] > 0 or not self.longs_only)
+                        and (halt_date is None or ts.date() != halt_date)):
+                    exit_price = op
+                    reason = "signal_reversal"
+                    reversal_exit = True
+                if reason is None and self.trail_atr > 0:
                     a_e = position["atr"]
                     if position["dir"] == 1:
                         if hi > position["best"]:
@@ -244,7 +261,7 @@ class Simulator:
                         stop = min(position["best"] + self.trail_atr * a_e, position["sl"])
                         if hi >= stop:
                             exit_price, reason = stop, "trail_stop"
-                else:
+                elif reason is None:
                     # A bar that opens beyond the level fills at the OPEN, not at
                     # the level: stops get gapped through, targets gapped into.
                     if position["dir"] == 1:
@@ -299,7 +316,8 @@ class Simulator:
             # NEVER on a bar that already produced an exit: the position was still
             # open at this bar's open, so re-entering at that open is a fill at a
             # price that no longer exists by the time the stop/target is hit.
-            if (position is None and not exited_this_bar
+            # EXCEPT a signal reversal, whose exit and entry both fill at the open.
+            if (position is None and (not exited_this_bar or reversal_exit)
                     and i > 0 and signals[i - 1] != 0
                     and can_enter[i]
                     and (halt_date is None or ts.date() != halt_date)):

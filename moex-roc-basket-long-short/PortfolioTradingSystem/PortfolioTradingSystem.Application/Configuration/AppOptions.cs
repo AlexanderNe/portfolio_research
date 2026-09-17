@@ -30,6 +30,15 @@ public sealed class TelegramOptions
 
     /// <summary>Master switch: when false signals are not sent even if configured.</summary>
     public bool Enabled { get; set; } = true;
+
+    /// <summary>HTTP proxy for outbound Telegram requests (e.g. "http://proxy-host:8080"). Empty = direct connection.</summary>
+    public string ProxyAddress { get; set; } = string.Empty;
+
+    /// <summary>Proxy authentication username. Only used when <see cref="ProxyAddress"/> is set.</summary>
+    public string ProxyUsername { get; set; } = string.Empty;
+
+    /// <summary>Proxy authentication password. Never logged.</summary>
+    public string ProxyPassword { get; set; } = string.Empty;
 }
 
 public sealed class DatabaseOptions

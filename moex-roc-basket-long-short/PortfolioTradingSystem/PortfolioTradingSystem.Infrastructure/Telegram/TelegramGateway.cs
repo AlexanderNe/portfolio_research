@@ -1,9 +1,11 @@
+using System.Net;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using PortfolioTradingSystem.Application.Configuration;
 using PortfolioTradingSystem.Application.Ports;
 using Telegram.Bot;
 using Telegram.Bot.Types;
+using Telegram.Bot.Types.Enums;
 
 namespace PortfolioTradingSystem.Infrastructure.Telegram;
 
@@ -27,13 +29,35 @@ public sealed class TelegramGateway : ITelegramGateway
         _enabled = o.Enabled && !string.IsNullOrWhiteSpace(o.BotToken) && !string.IsNullOrWhiteSpace(o.ChannelId);
         if (_enabled)
         {
-            _bot = new TelegramBotClient(o.BotToken);
+            _bot = new TelegramBotClient(o.BotToken, CreateHttpClient(o));
             _chatId = o.ChannelId;
         }
         else if (o.Enabled)
         {
             _logger.LogWarning("Telegram is enabled but bot token / channel id is not configured; notifications disabled");
         }
+    }
+
+    /// <summary>Builds the HTTP client used for Telegram API calls, routing through
+    /// the configured HTTP proxy (with credentials) when one is set.</summary>
+    private static HttpClient CreateHttpClient(TelegramOptions options)
+    {
+        if (string.IsNullOrWhiteSpace(options.ProxyAddress))
+        {
+            return new HttpClient();
+        }
+
+        var handler = new HttpClientHandler
+        {
+            UseProxy = true,
+            Proxy = new WebProxy(options.ProxyAddress)
+            {
+                Credentials = string.IsNullOrWhiteSpace(options.ProxyUsername)
+                    ? null
+                    : new NetworkCredential(options.ProxyUsername, options.ProxyPassword)
+            }
+        };
+        return new HttpClient(handler);
     }
 
     private const int Attempts = 3;
@@ -52,7 +76,7 @@ public sealed class TelegramGateway : ITelegramGateway
         {
             try
             {
-                await _bot.SendMessage(new ChatId(_chatId), text, cancellationToken: ct).ConfigureAwait(false);
+                await _bot.SendMessage(new ChatId(_chatId), text, parseMode: ParseMode.Html, cancellationToken: ct).ConfigureAwait(false);
                 return;
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
