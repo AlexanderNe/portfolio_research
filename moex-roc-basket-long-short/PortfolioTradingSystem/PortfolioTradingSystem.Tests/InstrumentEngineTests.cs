@@ -74,6 +74,61 @@ public class InstrumentEngineTests
     }
 
     [Fact]
+    public async Task PreOpenCandleDoesNotStealTheSessionOpen()
+    {
+        await using var h = new EngineHarness(Atr9Bars(longSignal: true));
+        await h.StartAsync();
+
+        // A morning-session candle before 10:00. It must not start the day; the old
+        // code marked the session "open not observed" here, so 10:00 was not a new
+        // session and the whole day's entry was skipped.
+        await h.FeedAsync(Minute(12, 9, 3, 101m, 102m, 100m, 101m));
+        Assert.Empty(h.Journal.Opens);
+
+        // The 10:00 candle is the real session open: enter at its open.
+        await h.FeedAsync(Minute(12, 10, 0, 100m, 101m, 99m, 100m));
+        var open = Assert.Single(h.Journal.Opens);
+        Assert.Equal(100m, open.EntryPrice);
+    }
+
+    [Fact]
+    public async Task PreOpenCandleDoesNotDisableTheOpenReversal()
+    {
+        // Restarted before the open (e.g. 00:30), so the first candle of the date is
+        // a morning-session one and the restored LONG must still be flipped to SHORT
+        // at the 10:00 open by yesterday's opposite signal.
+        var position = new OpenPosition
+        {
+            Ticker = "TST",
+            Direction = SignalDirection.Long,
+            Units = 500,
+            EntryPrice = 100m,
+            StopLoss = 82m,
+            TakeProfit = 127m,
+            AtrAtEntry = 9m,
+            OpenCommission = 20m,
+            EntryTime = new DateTimeOffset(2026, 1, 9, 10, 0, 0, Msk),
+        };
+
+        await using var h = new EngineHarness(Atr9Bars(longSignal: false));
+        h.Positions.Current = position;
+        h.TradeLogs.Realized = 1_234m;
+        await h.StartAsync();
+
+        await h.FeedAsync(Minute(12, 9, 3, 100m, 100m, 100m, 100m));
+        Assert.Empty(h.Journal.Closes);
+
+        await h.FeedAsync(Minute(12, 10, 0, 100m, 101m, 99m, 100m));
+        var close = Assert.Single(h.Journal.Closes);
+        Assert.Equal(ExitReason.SignalReversal, close.ExitReason);
+        Assert.Equal(100m, close.ExitPrice);
+
+        var open = Assert.Single(h.Journal.Opens);
+        Assert.Equal(SignalDirection.Short, open.Direction);
+        Assert.Equal(100m, open.EntryPrice);
+    }
+
+    [Fact]
     public async Task PartiallyObservedSessionDoesNotMoveAtr()
     {
         await using var h = new EngineHarness(Atr9Bars(longSignal: true));

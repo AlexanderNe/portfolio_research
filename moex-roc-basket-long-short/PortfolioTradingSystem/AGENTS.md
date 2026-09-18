@@ -70,6 +70,15 @@ agent, not for end users (see `README.md` for user/developer docs).
   `TryCloseOnReversal` + `TryOpen` pair inside `ProcessMinuteAsync`, published
   close-before-open so the unique per-instrument position row is replaced, not
   duplicated. Parity fixture `Fixtures/sber_trades.csv` exercises 31 such flips.
+- Pre-open candles: MOEX delivers morning-session candles on the same Moscow date
+  before 10:00. `ProcessMinuteAsync` ignores any candle whose MSK time-of-day is
+  `< MoscowClock.SessionOpen` before doing any session work; the 10:00 candle starts
+  the day. Before 2026-09-18 a pre-open candle started the session, so on a fresh
+  start (e.g. restart at 00:30) it set `_sessionOpenObserved=false` at ~09:00 and
+  10:00 was not a "new session", silently skipping that day's entry/reversal — the
+  "long position, pending short, never flips" report. A continuously running engine
+  instead advised the fill at the ~09:00 pre-open price. Regression tests:
+  `PreOpenCandleDoesNotStealTheSessionOpen`, `PreOpenCandleDoesNotDisableTheOpenReversal`.
 - Intraday SL/TP checked only for positions that existed BEFORE the candle.
 - Sizing: `units = floor(risk%·cash/(SlAtr·ATR))`, cap `floor(leverage·cash/notional)`,
   `SL=entry∓SlAtr·ATR`, `TP=entry±TpAtr·ATR`, commission both sides, SL before TP.

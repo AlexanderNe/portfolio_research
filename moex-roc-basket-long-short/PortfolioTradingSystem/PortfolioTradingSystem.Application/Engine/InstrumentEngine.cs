@@ -386,6 +386,29 @@ public sealed class InstrumentEngine : IAsyncDisposable
 
     private async Task ProcessMinuteAsync(Candle minute, CancellationToken ct)
     {
+        // MOEX delivers pre-open (morning-session) candles on the same Moscow date
+        // before the 10:00 main-session open. The strategy's daily bar and its
+        // entry/reversal decision both belong to the main session, so a pre-open
+        // candle must not start the day. Letting it did two wrong things:
+        //  * on a fresh start it marked the session "_sessionOpenObserved = false"
+        //    at, say, 09:03, and since 10:00 is then not a new session the flag was
+        //    never recomputed - silently skipping that day's entry/reversal (the
+        //    "long position, pending short, never flips" report);
+        //  * on a continuously running engine it treated the pre-open candle as the
+        //    session open and advised the fill at a ~09:00 price.
+        // The 10:00 candle starts the session; earlier candles are seen but ignored.
+        if (minute.Time.ToMoscow().TimeOfDay < MoscowClock.SessionOpen)
+        {
+            _metrics.Update(InstrumentId, m =>
+            {
+                m.LastCandleTime = minute.Time;
+                m.LastCandleClose = minute.Close;
+                m.LastProcessedBarTime = DateTimeOffset.UtcNow;
+                m.BarsProcessed++;
+            });
+            return;
+        }
+
         DateOnly mskDate = minute.Time.ToMoscowDate();
         OpenPosition? opened = null;
         TradeClosedEvent? closed = null;
