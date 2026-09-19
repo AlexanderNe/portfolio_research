@@ -17,6 +17,7 @@
     position: relative;
   }
   header h1 { margin: 0; font-size: 17px; font-weight: 600; }
+  .buildinfo { font-size: 12px; color: #8fa3bf; white-space: nowrap; }
   .statusline { display: flex; gap: 12px; margin-left: auto; align-items: center; flex-wrap: wrap; }
   .statusline .pill { padding: 3px 10px; border-radius: 12px; font-size: 12px; border: 1px solid #333; }
   .statusline a.pill { text-decoration: none; cursor: pointer; }
@@ -161,6 +162,7 @@
 <body>
 <header>
   <h1>Portfolio Trading System</h1>
+  <span class="buildinfo" id="buildInfo">$BUILD_LABEL$</span>
   <div class="statusline">
     <span class="pill" id="globalState">state: -</span>
     <span class="pill" id="engineCount">engines: -</span>

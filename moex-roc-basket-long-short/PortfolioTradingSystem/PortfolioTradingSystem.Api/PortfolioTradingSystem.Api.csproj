@@ -16,6 +16,15 @@
     <EmbeddedResource Include="Admin\equity.html" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!--
+      Emitted as [assembly: AssemblyMetadata("BuildDate", ...)] and shown in the
+      admin panel header (AdminPage replaces the $BUILD_LABEL$ token).
+    -->
+    <AssemblyMetadata Include="BuildDate"
+                      Value="$([System.DateTime]::UtcNow.ToString('yyyy.MM.dd HH:mm'))" />
+  </ItemGroup>
+
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>

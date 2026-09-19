@@ -18,6 +18,13 @@ public static class AdminPage
         using var stream = assembly.GetManifestResourceStream(name)
             ?? throw new InvalidOperationException($"Resource '{name}' not found.");
         using var reader = new StreamReader(stream);
-        return reader.ReadToEnd();
+        string html = reader.ReadToEnd();
+
+        string build = assembly.GetCustomAttributes(typeof(AssemblyMetadataAttribute), inherit: false)
+            .Cast<AssemblyMetadataAttribute>()
+            .FirstOrDefault(a => a.Key == "BuildDate")
+            ?.Value ?? "unknown";
+
+        return html.Replace("$BUILD_LABEL$", $"Built {build} UTC");
     }
 }
