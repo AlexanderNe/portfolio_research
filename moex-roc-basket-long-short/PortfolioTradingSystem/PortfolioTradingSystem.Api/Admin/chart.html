@@ -144,6 +144,7 @@ function computeScale() {
   const cs = data.candles || [];
   _autoMin = Infinity; _autoMax = -Infinity;
   cs.forEach(c => {
+    if (c.isPlaceholder) return;
     if (c.low < _autoMin) _autoMin = c.low;
     if (c.high > _autoMax) _autoMax = c.high;
   });
@@ -266,6 +267,16 @@ function drawCandles() {
   const up = "#2e9e5b", dn = "#d64545";
   scale.cs.forEach((c, i) => {
     const x = scale.xFor(i);
+    if (c.isPlaceholder) {
+      const y = scale.yFor(c.close);
+      const bw = Math.max(1, scale.candleW);
+      ctx.strokeStyle = "#42536e"; ctx.lineWidth = 1;
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath(); ctx.moveTo(x - bw * 0.5, y); ctx.lineTo(x + bw * 0.5, y); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x, y - 5); ctx.lineTo(x, y + 5); ctx.stroke();
+      ctx.setLineDash([]);
+      return;
+    }
     const o = scale.yFor(c.open), h = scale.yFor(c.high), l = scale.yFor(c.low), cl = scale.yFor(c.close);
     const color = c.close >= c.open ? up : dn;
     ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = 1;
@@ -400,9 +411,13 @@ function showTipAt(mx, my) {
   const idx = Math.round((view.from + fx * (view.to - view.from)) * scale.n);
   if (idx < 0 || idx >= scale.n) { tip.style.display = "none"; return; }
   const c = scale.cs[idx];
-  const lines = ["<b>" + fmtDay(c.time) + "</b>",
-    "O " + fmtPrice(c.open) + "   H " + fmtPrice(c.high),
-    "L " + fmtPrice(c.low) + "   C " + fmtPrice(c.close)];
+  const lines = ["<b>" + fmtDay(c.time) + "</b>"];
+  if (c.isPlaceholder) {
+    lines.push("no price data");
+  } else {
+    lines.push("O " + fmtPrice(c.open) + "   H " + fmtPrice(c.high));
+    lines.push("L " + fmtPrice(c.low) + "   C " + fmtPrice(c.close));
+  }
   (data.trades || []).forEach(t => {
     if (candleIndexFor(t.entryTime) === idx) {
       lines.push("<span class=\"mk-entry\">▲ " + (t.direction === "Long" ? "LONG" : "SHORT") + " entry @ " + fmtPrice(t.entryPrice) + " " + fmtTime(t.entryTime) + "</span>");

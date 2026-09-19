@@ -35,6 +35,9 @@ internal sealed class FakeHistory : IHistoricDailyBarsProvider
 
     public Task<IReadOnlyList<Candle>> GetDailyBarsAsync(string instrumentId, int maxBars, CancellationToken ct) =>
         Task.FromResult(_bars);
+
+    public Task<Candle?> GetCurrentDayBarAsync(string instrumentId, CancellationToken ct) =>
+        Task.FromResult<Candle?>(null);
 }
 
 internal sealed class FakeTelegram : ITelegramGateway

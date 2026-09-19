@@ -57,5 +57,32 @@ public sealed class TinkoffHistoricDailyBarsProvider : IHistoricDailyBarsProvide
         return bars.ToList();
     }
 
+    public async Task<Candle?> GetCurrentDayBarAsync(string instrumentId, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(instrumentId))
+        {
+            return null;
+        }
+
+        DateTimeOffset from = TinkoffMappers.TodayMoscowStart();
+        var response = await _connection.MarketData.GetCandlesAsync(
+            new GetCandlesRequest
+            {
+                InstrumentId = instrumentId,
+                Interval = CandleInterval.Day,
+                From = from.ToTimestamp(),
+                To = from.AddDays(2).ToTimestamp(),
+                Limit = 10,
+            },
+            new CallOptions(headers: _connection.Metadata, cancellationToken: ct)).ConfigureAwait(false);
+
+        DateOnly today = MoscowDate(DateTimeOffset.UtcNow);
+        return response.Candles
+            .Select(c => TinkoffMappers.ToCandle(c))
+            .Where(c => MoscowDate(c.Time) == today)
+            .OrderBy(c => c.Time)
+            .LastOrDefault();
+    }
+
     private static DateOnly MoscowDate(DateTimeOffset t) => Application.Engine.MoscowClock.ToMoscowDate(t);
 }

@@ -121,6 +121,14 @@ agent, not for end users (see `README.md` for user/developer docs).
 - Sunday/Moscow calendar anomalies can produce surprising candle timestamps (e.g. an
   entry at 21:28 Moscow on a non-trading Sunday in the Sept 2026 session); flag
   before shipping changes, don't silently "fix".
+- Admin chart (`GET /api/instruments/{id}/chart-data`) anchors every signal to its
+  Moscow calendar day: it appends the in-progress day bar via
+  `IHistoricDailyBarsProvider.GetCurrentDayBarAsync` when the engine has none (e.g.
+  restarted mid-session) and synthesises a dashed "no price data" placeholder candle
+  (`ChartCandleDto.IsPlaceholder`) for signal days the API cannot provide. Bar times
+  carry the Moscow offset while trade times come back from Postgres in UTC — compare
+  days via `MoscowClock.ToMoscowDate`, never `.Date`. That comparison class is a
+  deliberate fix, not a wart.
 - Research CSV (`data/candles_ru_daily/AFLT.csv` and similar) stops 2026-08-28 —
   cannot reproduce live signals for later dates from local files alone.
 - Additions to README/AGENTS should stay lean; keep user docs accurate (no invented

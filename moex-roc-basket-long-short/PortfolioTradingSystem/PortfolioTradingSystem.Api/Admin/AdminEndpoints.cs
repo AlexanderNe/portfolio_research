@@ -345,10 +345,70 @@ public static class AdminEndpoints
                     openPosition.EntryTime);
             }
 
+            // Anchoring: a signal logged on a still-in-progress day must sit on
+            // that day's candle, even when the minute feed has not delivered a bar
+            // yet (engine restarted mid-session). Bar times carry the Moscow offset
+            // while trade times come back from Postgres in UTC, so every day
+            // comparison goes through MoscowClock.ToMoscowDate.
+            var historyInstrumentId = InstrumentEngine.EffectiveInstrumentId(instrument);
+            var candleList = candles.ToList();
+            DateOnly today = MoscowClock.ToMoscowDate(DateTimeOffset.UtcNow);
+            bool hasTodayCandle = candleList.Any(c => MoscowClock.ToMoscowDate(c.Time) == today);
+            if (!hasTodayCandle && historyInstrumentId.Length > 0)
+            {
+                var todayBar = await history.GetCurrentDayBarAsync(historyInstrumentId, ct).ConfigureAwait(false);
+                if (todayBar is not null)
+                {
+                    candleList.Add(todayBar.Value);
+                }
+            }
+
+            // Days referenced by signals, as placeholders when the API has no bar
+            // for them (no price data at all): the marker still gets its own column.
+            var referencedDays = new SortedSet<DateOnly>();
+            foreach (var t in closedTrades)
+            {
+                referencedDays.Add(MoscowClock.ToMoscowDate(t.EntryTime));
+                referencedDays.Add(MoscowClock.ToMoscowDate(t.ExitTime));
+            }
+
+            if (openPosition is not null)
+            {
+                referencedDays.Add(MoscowClock.ToMoscowDate(openPosition.EntryTime));
+            }
+
+            var coveredDays = new HashSet<DateOnly>(candleList.Select(c => MoscowClock.ToMoscowDate(c.Time)));
+            DateOnly lastDay = candleList.Count > 0 ? MoscowClock.ToMoscowDate(candleList[^1].Time) : default;
+            var placeholders = new List<(DateOnly Day, decimal Price)>();
+            foreach (var day in referencedDays)
+            {
+                if (coveredDays.Contains(day) || (candleList.Count > 0 && day <= lastDay))
+                {
+                    continue;
+                }
+
+                decimal refPrice = candleList.Count > 0 ? candleList[^1].Close : 0m;
+                placeholders.Add((day, refPrice));
+                coveredDays.Add(day);
+            }
+
+            var chartCandles = candleList
+                .Select(c => new ChartCandleDto(c.Time, c.Open, c.High, c.Low, c.Close, c.Volume))
+                .ToList();
+            foreach (var (day, price) in placeholders)
+            {
+                var placeholderTime = new DateTimeOffset(
+                    day.ToDateTime(TimeOnly.FromTimeSpan(MoscowClock.SessionOpen)),
+                    MoscowClock.Offset);
+                chartCandles.Add(new ChartCandleDto(placeholderTime, price, price, price, price, 0, IsPlaceholder: true));
+            }
+
+            chartCandles.Sort((a, b) => a.Time.CompareTo(b.Time));
+
             return Results.Json(new ChartDataDto(
                 instrument.Ticker,
                 instrument.Name ?? string.Empty,
-                candles.Select(c => new ChartCandleDto(c.Time, c.Open, c.High, c.Low, c.Close, c.Volume)).ToList(),
+                chartCandles,
                 trades,
                 open));
         });

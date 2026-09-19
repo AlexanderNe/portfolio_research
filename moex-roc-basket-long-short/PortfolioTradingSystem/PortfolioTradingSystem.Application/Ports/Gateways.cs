@@ -19,6 +19,15 @@ public interface IHistoricDailyBarsProvider
 {
     /// <summary>Returns up to <paramref name="maxBars"/> completed daily bars, ascending, excluding the current day.</summary>
     Task<IReadOnlyList<Candle>> GetDailyBarsAsync(string instrumentId, int maxBars, CancellationToken ct);
+
+    /// <summary>
+    /// Returns the in-progress daily bar for the current Moscow day, or null when
+    /// the API has none (non-trading day, market not opened yet). Read-only — used
+    /// by the admin chart so a signal logged today still anchors to its own day
+    /// even when the minute feed has not delivered a candle yet (e.g. right after
+    /// a restart mid-session). Never feeds engine state.
+    /// </summary>
+    Task<Candle?> GetCurrentDayBarAsync(string instrumentId, CancellationToken ct);
 }
 
 /// <summary>

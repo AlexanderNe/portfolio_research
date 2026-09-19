@@ -1,7 +1,18 @@
 namespace PortfolioTradingSystem.Api.Admin;
 
-/// <summary>One daily bar for the chart.</summary>
-public sealed record ChartCandleDto(DateTimeOffset Time, decimal Open, decimal High, decimal Low, decimal Close, long Volume);
+/// <summary>
+/// One daily bar for the chart. A placeholder candle carries no price data
+/// (all fields equal the neighbouring close, volume 0) but still gives a signal
+/// drawn on a day with no data an x-slot to anchor to.
+/// </summary>
+public sealed record ChartCandleDto(
+    DateTimeOffset Time,
+    decimal Open,
+    decimal High,
+    decimal Low,
+    decimal Close,
+    long Volume,
+    bool IsPlaceholder = false);
 
 /// <summary>One completed position (entry → exit) for the chart.</summary>
 public sealed record ChartTradeDto(
