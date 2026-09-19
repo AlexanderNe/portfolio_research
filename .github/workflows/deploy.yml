@@ -1,0 +1,82 @@
+name: Deploy PortfolioTradingSystem to Ubuntu VM
+
+# Manual deploy only — run from the Actions tab (workflow_dispatch).
+# One-time VM provisioning is required first (see
+# moex-roc-basket-long-short/PortfolioTradingSystem/DEPLOYMENT.md):
+# .NET 10 runtime, PostgreSQL, /opt/portfolio-trading with logs/, systemd
+# unit "trading", secrets in /etc/portfolio-trading.env. The SSH user needs
+# passwordless sudo.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to deploy to (secrets are read from this GitHub environment)
+        type: environment
+        required: false
+        default: production
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Run .NET tests
+        run: dotnet test moex-roc-basket-long-short/PortfolioTradingSystem/PortfolioTradingSystem.slnx --configuration Release
+
+      - name: Publish app for linux-x64
+        run: dotnet publish moex-roc-basket-long-short/PortfolioTradingSystem/PortfolioTradingSystem.Api -c Release -r linux-x64 --self-contained false -o ./publish_output
+
+      - name: Verify publish artifacts
+        run: |
+          # Server-side publish (linux-x64) must produce an ELF apphost, not a
+          # Windows PE32+ (DEPLOYMENT.md §4 troubleshooting).
+          file ./publish_output/PortfolioTradingSystem.Api | grep -- 'ELF'
+          test -f ./publish_output/PortfolioTradingSystem.Api.dll
+          test -f ./publish_output/appsettings.json
+
+      - name: Copy app to VM (staging)
+        uses: appleboy/scp-action@v1
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || 22 }}
+          source: ./publish_output/*
+          target: portfolio-trading-deploy
+
+      - name: Install and restart service on VM
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || 22 }}
+          script: |
+            set -euo pipefail
+
+            INSTALL_DIR=/opt/portfolio-trading
+            STAGING="$HOME/portfolio-trading-deploy"
+
+            # rsync is not part of every minimal install; ensure it is present.
+            sudo apt-get install -y rsync >/dev/null
+
+            # Sync the app tree. logs/ is runtime state and must survive.
+            sudo rsync -a --delete --exclude 'logs/' "$STAGING/" "$INSTALL_DIR/"
+
+            # Files uploaded with scp can lose the executable bit (DEPLOYMENT.md §4).
+            sudo chmod +x "$INSTALL_DIR/PortfolioTradingSystem.Api"
+            sudo chown -R dotnet-service:dotnet-service "$INSTALL_DIR"
+
+            sudo systemctl restart trading
+            sleep 5
+            sudo systemctl status trading --no-pager
