@@ -479,15 +479,40 @@ function touchDist(a, b) {
 cv.addEventListener("touchstart", e => {
   if (e.touches.length >= 2) {
     e.preventDefault();
+    const clientX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+    const clientY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+    const rect = cv.getBoundingClientRect();
+    // Zone and zoom baseline are fixed when the pinch starts: the price axis
+    // (left gutter) drives price/vertical, the plot drives time/horizontal.
+    // Snapshotting the view lets every move recompute the zoom from the START
+    // only - deriving it from each frame's already-zoomed width compounds per
+    // frame and feels like acceleration.
+    const zone = clientX - rect.left < PAD.l ? "axis" : "chart";
     gesture = {
       dist: touchDist(e.touches[0], e.touches[1]),
-      midX: (e.touches[0].clientX + e.touches[1].clientX) / 2,
-      midY: (e.touches[0].clientY + e.touches[1].clientY) / 2
+      startMidX: clientX,
+      startMidY: clientY,
+      zone,
+      frac: Math.min(1, Math.max(0, zone === "axis"
+        ? (clientY - rect.top - PAD.t) / Math.max(1, scale.plotH)
+        : (clientX - rect.left - PAD.l) / Math.max(1, scale.plotW))),
+      min: scale.minPrice,
+      span: scale.maxPrice - scale.minPrice,
+      viewFrom: view.from,
+      viewW: view.to - view.from
     };
     tap = null;
     tip.style.display = "none";
   } else if (e.touches.length === 1 && !gesture) {
-    tap = { x: e.touches[0].clientX, y: e.touches[0].clientY, moved: false };
+    const rect = cv.getBoundingClientRect();
+    tap = {
+      x: e.touches[0].clientX,
+      y: e.touches[0].clientY,
+      lastX: e.touches[0].clientX,
+      lastY: e.touches[0].clientY,
+      zone: e.touches[0].clientX - rect.left < PAD.l ? "axis" : "chart",
+      moved: false
+    };
   }
 }, { passive: false });
 
@@ -499,28 +524,55 @@ cv.addEventListener("touchmove", e => {
     tap = null;
     const t = e.touches;
     const dist = touchDist(t[0], t[1]);
+    // Zoom recomputed from the START snapshot only (frame-count independent ->
+    // no acceleration), layered with a two-finger pan that follows the fingers'
+    // midpoint on BOTH axes. Everything is absolute-from-start, so nothing can
+    // compound frame-to-frame. 0.7 damping = a bit under raw speed; 1 = raw.
+    const rel = gesture.dist > 0 ? Math.pow(gesture.dist / dist, 0.7) : 1;
     const midX = (t[0].clientX + t[1].clientX) / 2;
     const midY = (t[0].clientY + t[1].clientY) / 2;
-    const rect = cv.getBoundingClientRect();
-    const factor = gesture.dist > 0 ? gesture.dist / dist : 1;
-    const fx = midX - rect.left;
-    const fy = midY - rect.top;
-    // Pinch on the price axis scales price only (mirrors the wheel over the axis);
-    // a pinch over the plot keeps the usual two-axis zoom.
-    if (fx < PAD.l) {
-      applyVertical(fy, factor);
+    const panX = midX - gesture.startMidX;
+    const panY = midY - gesture.startMidY;
+    if (gesture.zone === "axis") {
+      const newSpan = Math.max(
+        Math.max(1e-9, (_autoMax - _autoMin) * 0.002),
+        gesture.span * rel);
+      const anchor = gesture.min + gesture.span - gesture.frac * gesture.span;
+      const newMax = anchor + gesture.frac * newSpan;
+      const shift = (panY / Math.max(1, scale.plotH)) * newSpan;
+      priceView = { min: newMax - newSpan + shift, max: newMax + shift };
     } else {
-      applyHorizontal(fx, factor);
-      applyVertical(fy, factor);
+      const newWidth = Math.min(1, Math.max(Math.min(1, 2 / scale.n), gesture.viewW * rel));
+      const anchor = gesture.viewFrom + gesture.frac * gesture.viewW;
+      const baseFrom = anchor - gesture.frac * newWidth;
+      const shift = (panX / Math.max(1, scale.plotW)) * newWidth;
+      view.from = baseFrom - shift;
+      view.to = view.from + newWidth;
+      // The two-finger DRAG also pans the price axis in the plot zone (price is
+      // not zoomed here, so the span stays the gesture's start span).
+      const pShift = (panY / Math.max(1, scale.plotH)) * gesture.span;
+      priceView = { min: gesture.min + pShift, max: gesture.min + gesture.span + pShift };
     }
-    panBy(midX - gesture.midX, midY - gesture.midY);
     render();
-    gesture.dist = dist;
-    gesture.midX = midX;
-    gesture.midY = midY;
   } else if (e.touches.length === 1 && tap && !gesture) {
     const t = e.touches[0];
     if (Math.hypot(t.clientX - tap.x, t.clientY - tap.y) > 8) tap.moved = true;
+    if (tap.moved) {
+      tip.style.display = "none";
+      // panBy is incremental: feed it the delta since the last move, or the
+      // chart accelerates every frame.
+      if (tap.zone === "axis") {
+        e.preventDefault();
+        panBy(0, t.clientY - tap.lastY);
+        tap.lastY = t.clientY;
+        render();
+      } else if (Math.abs(t.clientX - tap.x) > Math.abs(t.clientY - tap.y)) {
+        e.preventDefault();
+        panBy(t.clientX - tap.lastX, 0);
+        tap.lastX = t.clientX;
+        render();
+      }
+    }
   }
 }, { passive: false });
 
