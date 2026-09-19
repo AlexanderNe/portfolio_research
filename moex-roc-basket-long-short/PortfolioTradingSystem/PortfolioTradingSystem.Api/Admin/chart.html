@@ -84,6 +84,17 @@ function fmtTime(iso) {
   const d = new Date(iso);
   return isNaN(d) ? "—" : d.toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
 }
+// MOEX calendar day (UTC+3) of an instant, as an int yyyymmdd. The strategy's
+// candles and fills live on Moscow trading days; mapping both to this key (and
+// NOT to the absolute instant) keeps the marker on the exact day the signal
+// happened even when the candle's timestamp and the fill's timestamp disagree
+// by an intraday offset.
+function mskDayKey(iso) {
+  const d = new Date(iso);
+  if (isNaN(d)) return null;
+  const m = new Date(d.getTime() + 3 * 3600 * 1000);
+  return m.getUTCFullYear() * 10000 + (m.getUTCMonth() + 1) * 100 + m.getUTCDate();
+}
 function esc(s) {
   return String(s === null || s === undefined ? "" : s).replace(/[&<>"']/g, c => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -157,6 +168,7 @@ function computeScale() {
     candleW: Math.max(1, Math.min(20, n > 0 ? plotW / windowFrac / n * 0.7 : 20)),
     xFor: i => n === 0 ? PAD.l : PAD.l + ((i / n - view.from) / windowFrac) * plotW,
     yFor: p => PAD.t + plotH - (p - priceMin) / priceSpan * plotH,
+    candleDays: cs.map(c => mskDayKey(c.time)),
     minPrice: priceMin,
     maxPrice: priceMax,
   };
@@ -164,14 +176,15 @@ function computeScale() {
 
 function candleIndexFor(time) {
   if (!time || scale.n === 0) return 0;
-  const t = new Date(time).getTime();
-  if (isNaN(t)) return 0;
-  if (new Date(scale.cs[0].time).getTime() >= t) return 0;
-  if (new Date(scale.cs[scale.n - 1].time).getTime() <= t) return scale.n - 1;
-  let lo = 0, hi = scale.n - 1;
+  const day = mskDayKey(time);
+  const keys = scale.candleDays;
+  if (day === null || !keys || keys.length === 0) return 0;
+  if (day <= keys[0]) return 0;
+  if (day >= keys[keys.length - 1]) return keys.length - 1;
+  let lo = 0, hi = keys.length - 1;
   while (lo < hi) {
     const mid = (lo + hi + 1) >> 1;
-    if (new Date(scale.cs[mid].time).getTime() <= t) lo = mid; else hi = mid - 1;
+    if (keys[mid] <= day) lo = mid; else hi = mid - 1;
   }
   return lo;
 }
@@ -395,7 +408,7 @@ function showTipAt(mx, my) {
       lines.push("<span class=\"mk-entry\">▲ " + (t.direction === "Long" ? "LONG" : "SHORT") + " entry @ " + fmtPrice(t.entryPrice) + " " + fmtTime(t.entryTime) + "</span>");
     }
     if (candleIndexFor(t.exitTime) === idx) {
-      lines.push("<span class=\"mk-exit\">✕ " + t.direction + " exit @ " + fmtPrice(t.exitPrice) + " (" + esc(t.reason || "") + ", " + fmtPct(t.pnlPercent) + ")</span>");
+      lines.push("<span class=\"mk-exit\">✕ " + t.direction + " exit @ " + fmtPrice(t.exitPrice) + " (" + esc(t.reason || "") + ", " + fmtPct(t.pnlPercent) + ") " + fmtTime(t.exitTime) + "</span>");
     }
   });
   if (data.openPosition && candleIndexFor(data.openPosition.entryTime) === idx) {
