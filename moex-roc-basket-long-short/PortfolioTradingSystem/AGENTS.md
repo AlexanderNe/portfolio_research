@@ -8,6 +8,11 @@ agent, not for end users (see `README.md` for user/developer docs).
 - **Never run the app.** Only build: `dotnet build PortfolioTradingSystem.slnx`
   (angles: working dir `C:\Users\...\PortfolioTradingSystem`, or via `workdir`).
 - Every delivery must end with a build that is **0 errors and 0 warnings**.
+  Exception (2026-09-19): do NOT `dotnet build` when a change is html/js-only
+  (Admin/*.html), since the build validates no JS. Keep in mind those files are
+  EMBEDDED into Api.dll, so serving the change still needs a rebuild+restart;
+  if the app is running that rebuild emits transient MSB3026 file-lock warnings
+  — not a real failure.
 - **Never modify the Python research** (`../strategy_research.py`, `../report`,
   `../data/`) — it is the single source of truth for the strategy. (Exception,
   2026-09-12, on explicit request: the simulator's execution model was corrected;

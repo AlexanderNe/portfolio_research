@@ -137,6 +137,17 @@
       padding: 4px 12px; background: #161d29;
     }
     tr:hover td { background: transparent; }
+    /* Simple instrument view: one compact line per instrument, formatted the
+       same way as the desktop columns (position pill badge, fmtPct PnL). */
+    table.simple tbody { display: block; }
+    table.simple tr {
+      display: flex; align-items: center; justify-content: space-between; gap: 10px;
+      border: 1px solid #2c3648; border-radius: 8px; margin: 0 0 8px;
+      padding: 8px 12px; background: #161d29;
+    }
+    table.simple td { display: inline-flex; align-items: center; padding: 0; border: none; }
+    table.simple td::before { content: none; }
+    table.simple td:first-child { font-weight: 600; }
     td {
       display: flex; justify-content: space-between; align-items: center; gap: 12px;
       padding: 7px 0; border-bottom: 1px dashed #232c3b;
@@ -233,10 +244,11 @@
           <input type="text" id="instFilter" list="instTickerOptions" placeholder="Filter by ticker…">
           <datalist id="instTickerOptions"></datalist>
         </div>
+        <button class="btn" id="simpleViewBtn" style="margin-left:auto" onclick="toggleSimpleView()">Simple view</button>
         <span class="empty" id="instCount"></span>
       </div>
-      <table>
-        <thead>
+      <table id="instTable">
+        <thead id="rowsHead">
           <tr>
             <th>Ticker</th><th>Name</th><th>Status</th><th>FIGI / ISIN / Lot / Future</th>
             <th>Engine</th><th>Last candle</th><th>ROC / ATR</th><th>Position</th><th>Actions</th>
@@ -290,6 +302,7 @@ let instruments = [];
 let metricByTicker = {};
 let expandedTicker = null;
 let instFilter = "";
+let simpleView = (function () { try { return localStorage.getItem("ptsInstSimpleView") === "1"; } catch (e) { return false; } })();
 let editState = null;
 let currentView = "instruments";
 let sigState = { ticker: "", page: 1, pageSize: 50, total: 0, totalPages: 1, hasRows: false };
@@ -421,6 +434,23 @@ async function refresh() {
   }
 }
 
+function renderSimpleRows(list) {
+  return list.map(instr => {
+    const m = instr.metrics;
+    const pos = m && m.positionState === "long" ? badge("LONG", "green")
+      : m && m.positionState === "short" ? badge("SHORT", "red")
+      : badge(m ? "flat" : "—", "gray");
+    const pnlPct = m && m.positionPnlPercent !== null && m.positionPnlPercent !== undefined
+      ? '<span style="color:' + (m.positionPnlPercent >= 0 ? "#7fd18a" : "#e88f8f") + '">' + esc(fmtPct(m.positionPnlPercent)) + '</span>'
+      : "—";
+    return '<tr>' +
+      '<td data-label="Ticker"><b>' + esc(instr.ticker) + '</b></td>' +
+      '<td data-label="Position">' + pos + '</td>' +
+      '<td data-label="PnL" class="mono">' + pnlPct + '</td>' +
+      '</tr>';
+  }).join("");
+}
+
 function renderRows() {
   const tbody = document.getElementById("rows");
   if (!instruments.length) {
@@ -436,6 +466,17 @@ function renderRows() {
   }
   const cntEl = document.getElementById("instCount");
   if (cntEl) cntEl.textContent = list.length === instruments.length ? "" : list.length + " of " + instruments.length;
+  const head = document.getElementById("rowsHead");
+  if (head) head.innerHTML = simpleView
+    ? '<tr><th>Ticker</th><th>Position</th><th>PnL</th></tr>'
+    : '<tr><th>Ticker</th><th>Name</th><th>Status</th><th>FIGI / ISIN / Lot / Future</th>' +
+      '<th>Engine</th><th>Last candle</th><th>ROC / ATR</th><th>Position</th><th>Actions</th></tr>';
+  const tableEl = document.getElementById("instTable");
+  if (tableEl) tableEl.className = simpleView ? "simple" : "";
+  if (simpleView) {
+    tbody.innerHTML = renderSimpleRows(list);
+    return;
+  }
   tbody.innerHTML = list.map(instr => {
     const m = instr.metrics;
     const mBadge = engineBadge(m);
@@ -825,6 +866,15 @@ document.getElementById("instFilter").addEventListener("input", e => {
   instFilter = e.target.value.trim().toUpperCase();
   renderRows();
 });
+
+function toggleSimpleView() {
+  simpleView = !simpleView;
+  try { localStorage.setItem("ptsInstSimpleView", simpleView ? "1" : "0"); } catch (e) { /* storage unavailable */ }
+  const btn = document.getElementById("simpleViewBtn");
+  if (btn) btn.textContent = simpleView ? "Full view" : "Simple view";
+  renderRows();
+}
+document.getElementById("simpleViewBtn").textContent = simpleView ? "Full view" : "Simple view";
 
 document.getElementById("addForm").onsubmit = async e => {
   e.preventDefault();
