@@ -102,9 +102,12 @@
   }
   .tab:hover { background: #1c2431; color: #dbe2ec; }
   .tab.active { background: #1a2230; color: #fff; border-color: #4a5a72; }
+  .filterbox { display: flex; flex: 0 1 190px; min-width: 0; }
+  .toolbar > .btn { flex: 0 0 auto; white-space: nowrap; }
+  .inst-toolbar { flex-wrap: nowrap; }
   .filterbox input[type="text"] {
     background: #131820; border: 1px solid #3d4a5f; color: #dbe2ec; border-radius: 5px;
-    padding: 6px 8px; font-size: 13px; width: 190px;
+    padding: 6px 8px; font-size: 13px; width: 100%; min-width: 0;
   }
   .pager { display: flex; gap: 12px; align-items: center; margin-top: 12px; }
   .pager .btn:disabled { opacity: .5; cursor: not-allowed; }
@@ -239,7 +242,7 @@
     </div>
 
     <div class="card" style="margin-top:14px; overflow-x:auto">
-      <div class="toolbar" style="margin-bottom:10px">
+      <div class="toolbar inst-toolbar" style="margin-bottom:10px">
         <div class="filterbox">
           <input type="text" id="instFilter" list="instTickerOptions" placeholder="Filter by ticker…">
           <datalist id="instTickerOptions"></datalist>
@@ -443,7 +446,7 @@ function renderSimpleRows(list) {
     const pnlPct = m && m.positionPnlPercent !== null && m.positionPnlPercent !== undefined
       ? '<span style="color:' + (m.positionPnlPercent >= 0 ? "#7fd18a" : "#e88f8f") + '">' + esc(fmtPct(m.positionPnlPercent)) + '</span>'
       : "—";
-    return '<tr>' +
+    return '<tr onclick="window.open(\'/chart?id=' + instr.id + '\', \'_blank\')">' +
       '<td data-label="Ticker"><b>' + esc(instr.ticker) + '</b></td>' +
       '<td data-label="Position">' + pos + '</td>' +
       '<td data-label="PnL" class="mono">' + pnlPct + '</td>' +
