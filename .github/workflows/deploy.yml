@@ -47,6 +47,9 @@ jobs:
           port: ${{ secrets.DEPLOY_PORT || 22 }}
           source: ./publish_output/*
           target: portfolio-trading-deploy
+          # drone-scp preserves the source-relative path (publish_output/...).
+          # Strip it so files land flat in ~/portfolio-trading-deploy.
+          strip_components: 1
 
       - name: Install and restart service on VM
         uses: appleboy/ssh-action@v1
