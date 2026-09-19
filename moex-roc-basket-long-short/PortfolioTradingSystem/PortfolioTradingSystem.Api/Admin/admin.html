@@ -228,6 +228,13 @@
     </div>
 
     <div class="card" style="margin-top:14px; overflow-x:auto">
+      <div class="toolbar" style="margin-bottom:10px">
+        <div class="filterbox">
+          <input type="text" id="instFilter" list="instTickerOptions" placeholder="Filter by ticker…">
+          <datalist id="instTickerOptions"></datalist>
+        </div>
+        <span class="empty" id="instCount"></span>
+      </div>
       <table>
         <thead>
           <tr>
@@ -282,6 +289,7 @@
 let instruments = [];
 let metricByTicker = {};
 let expandedTicker = null;
+let instFilter = "";
 let editState = null;
 let currentView = "instruments";
 let sigState = { ticker: "", page: 1, pageSize: 50, total: 0, totalPages: 1, hasRows: false };
@@ -405,6 +413,8 @@ async function refresh() {
     instruments = views.map(v => Object.assign({}, v.instrument, { metrics: v.metrics || null }));
     metricByTicker = {};
     instruments.forEach(i => { if (i.metrics) metricByTicker[i.ticker] = i.metrics; });
+    document.getElementById("instTickerOptions").innerHTML =
+      [...new Set(instruments.map(i => i.ticker))].map(t => '<option value="' + esc(t) + '"></option>').join("");
     if (!editState) renderRows();
   } catch (e) {
     if (e.message !== "401") showError("Refresh failed: " + e.message);
@@ -417,7 +427,16 @@ function renderRows() {
     tbody.innerHTML = '<tr><td colspan="9" class="empty">No instruments.</td></tr>';
     return;
   }
-  tbody.innerHTML = instruments.map(instr => {
+  const list = instFilter
+    ? instruments.filter(i => (i.ticker || "").toUpperCase().includes(instFilter))
+    : instruments;
+  if (!list.length) {
+    tbody.innerHTML = '<tr><td colspan="9" class="empty">No instruments matching "' + esc(instFilter) + '".</td></tr>';
+    return;
+  }
+  const cntEl = document.getElementById("instCount");
+  if (cntEl) cntEl.textContent = list.length === instruments.length ? "" : list.length + " of " + instruments.length;
+  tbody.innerHTML = list.map(instr => {
     const m = instr.metrics;
     const mBadge = engineBadge(m);
     const lastCandle = m ? fmtTime(m.lastCandleTime) + " @ " + fmtNum(m.lastCandleClose, 4) : "—";
@@ -800,6 +819,11 @@ function renderSignalRows(items) {
 
 document.getElementById("sigTicker").addEventListener("keydown", e => {
   if (e.key === "Enter") { e.preventDefault(); applyTickerFilter(); }
+});
+
+document.getElementById("instFilter").addEventListener("input", e => {
+  instFilter = e.target.value.trim().toUpperCase();
+  renderRows();
 });
 
 document.getElementById("addForm").onsubmit = async e => {
