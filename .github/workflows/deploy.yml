@@ -1,6 +1,7 @@
 name: Deploy PortfolioTradingSystem to Ubuntu VM
 
-# Manual deploy only — run from the Actions tab (workflow_dispatch).
+# Manual deploy only — run from the Actions tab (workflow_dispatch). No other
+# triggers, no environment scoping: secrets are read from repository secrets.
 # One-time VM provisioning is required first (see
 # moex-roc-basket-long-short/PortfolioTradingSystem/DEPLOYMENT.md):
 # .NET 10 runtime, PostgreSQL, /opt/portfolio-trading with logs/, systemd
@@ -9,17 +10,10 @@ name: Deploy PortfolioTradingSystem to Ubuntu VM
 
 on:
   workflow_dispatch:
-    inputs:
-      environment:
-        description: Environment to deploy to (secrets are read from this GitHub environment)
-        type: environment
-        required: false
-        default: production
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    environment: ${{ inputs.environment }}
 
     steps:
       - name: Checkout repository
