@@ -90,7 +90,9 @@
     color: #6d7c96; font-size: 10px;
     text-transform: none; letter-spacing: .03em;
   }
-  .pnlcard.total .val.sub { font-size: 12px; font-weight: 600; }
+  .pnlcard .val.sub { font-size: 12px; font-weight: 600; }
+  .pnlcard .val.sub.up { color: #7fd18a; }
+  .pnlcard .val.sub.down { color: #e88f8f; }
   .pnlcard .valrow { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
   .pnlcard .val { font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; }
   .pnlcard .pct { font-size: 12px; font-weight: 600; opacity: .85; }
@@ -416,6 +418,12 @@ async function refresh() {
       el.classList.remove("up", "down");
       if (v !== null && v !== undefined && !isNaN(v)) el.classList.add(v >= 0 ? "up" : "down");
     }
+    function setPnlSub(v) {
+      [totalUnrlEl, totalUnrlPctEl].forEach(el => {
+        el.classList.remove("up", "down");
+        if (v !== null && v !== undefined && !isNaN(v)) el.classList.add(v >= 0 ? "up" : "down");
+      });
+    }
 
     const totalEl = document.getElementById("pnlTotal");
     const pctEl = document.getElementById("pnlTotalPct");
@@ -431,12 +439,14 @@ async function refresh() {
       totalUnrlEl.textContent = totalUnrlMatch ? fmtMoney(parseFloat(totalUnrlMatch[1])) + " RUB" : "—";
       totalUnrlPctEl.textContent = totalUnrlPctMatch ? fmtPct(parseFloat(totalUnrlPctMatch[1])) : "—";
       setPnlCard("pnlCardTotal", parseFloat(pnlMatch[1]));
+      setPnlSub(totalUnrlMatch ? parseFloat(totalUnrlMatch[1]) : null);
     } else {
       totalEl.textContent = "—";
       pctEl.textContent = "—";
       totalUnrlEl.textContent = "—";
       totalUnrlPctEl.textContent = "—";
       setPnlCard("pnlCardTotal", null);
+      setPnlSub(null);
     }
     longsEl.textContent = longsMatch ? fmtMoney(parseFloat(longsMatch[1])) + " RUB" : "—";
     shortsEl.textContent = shortsMatch ? fmtMoney(parseFloat(shortsMatch[1])) + " RUB" : "—";
