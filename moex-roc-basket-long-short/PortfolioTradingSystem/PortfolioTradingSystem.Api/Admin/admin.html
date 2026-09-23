@@ -86,6 +86,11 @@
     color: #8fa3bf; font-size: 11px; font-weight: 600;
     text-transform: uppercase; letter-spacing: .05em;
   }
+  .pnlcard .note {
+    color: #6d7c96; font-size: 10px;
+    text-transform: none; letter-spacing: .03em;
+  }
+  .pnlcard.total .val.sub { font-size: 12px; font-weight: 600; }
   .pnlcard .valrow { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
   .pnlcard .val { font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; }
   .pnlcard .pct { font-size: 12px; font-weight: 600; opacity: .85; }
@@ -201,9 +206,15 @@
         <a class="val" id="pnlTotal" href="/equity" target="_blank" rel="noopener" title="Open total equity chart">—</a>
         <span class="val pct" id="pnlTotalPct">—</span>
       </div>
+      <div class="valrow">
+        <span class="note">unrealized</span>
+        <span class="val sub" id="pnlTotalUnrl">—</span>
+        <span class="val pct sub" id="pnlTotalUnrlPct">—</span>
+      </div>
     </div>
     <div class="pnlcard" id="pnlCardLongs">
       <span class="lbl">Longs PnL</span>
+      <span class="note">unrealized</span>
       <div class="valrow">
         <span class="val" id="pnlLongs">—</span>
         <span class="val pct" id="pnlLongsPct">—</span>
@@ -211,6 +222,7 @@
     </div>
     <div class="pnlcard" id="pnlCardShorts">
       <span class="lbl">Shorts PnL</span>
+      <span class="note">unrealized</span>
       <div class="valrow">
         <span class="val" id="pnlShorts">—</span>
         <span class="val pct" id="pnlShortsPct">—</span>
@@ -389,6 +401,8 @@ async function refresh() {
     const cntMatch = text.match(/instruments:\s*(\d+) \(running: (\d+)\)/);
     const pnlMatch = text.match(/total pnl:\s*([-+]?[0-9.]+)/);
     const pnlPctMatch = text.match(/total pnl pct:\s*([-+]?[0-9.]+)/);
+    const totalUnrlMatch = text.match(/total unrealized pnl:\s*([-+]?[0-9.]+)/);
+    const totalUnrlPctMatch = text.match(/total unrealized pnl pct:\s*([-+]?[0-9.]+)/);
     const longsMatch = text.match(/longs pnl:\s*([-+]?[0-9.]+)/);
     const shortsMatch = text.match(/shorts pnl:\s*([-+]?[0-9.]+)/);
     const longsPctMatch = text.match(/longs pnl pct:\s*([-+]?[0-9.]+)/);
@@ -405,6 +419,8 @@ async function refresh() {
 
     const totalEl = document.getElementById("pnlTotal");
     const pctEl = document.getElementById("pnlTotalPct");
+    const totalUnrlEl = document.getElementById("pnlTotalUnrl");
+    const totalUnrlPctEl = document.getElementById("pnlTotalUnrlPct");
     const longsEl = document.getElementById("pnlLongs");
     const shortsEl = document.getElementById("pnlShorts");
     const longsPctEl = document.getElementById("pnlLongsPct");
@@ -412,10 +428,14 @@ async function refresh() {
     if (pnlMatch) {
       totalEl.textContent = fmtMoney(parseFloat(pnlMatch[1])) + " RUB";
       pctEl.textContent = pnlPctMatch ? fmtPct(parseFloat(pnlPctMatch[1])) : "—";
+      totalUnrlEl.textContent = totalUnrlMatch ? fmtMoney(parseFloat(totalUnrlMatch[1])) + " RUB" : "—";
+      totalUnrlPctEl.textContent = totalUnrlPctMatch ? fmtPct(parseFloat(totalUnrlPctMatch[1])) : "—";
       setPnlCard("pnlCardTotal", parseFloat(pnlMatch[1]));
     } else {
       totalEl.textContent = "—";
       pctEl.textContent = "—";
+      totalUnrlEl.textContent = "—";
+      totalUnrlPctEl.textContent = "—";
       setPnlCard("pnlCardTotal", null);
     }
     longsEl.textContent = longsMatch ? fmtMoney(parseFloat(longsMatch[1])) + " RUB" : "—";

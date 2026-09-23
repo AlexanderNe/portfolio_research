@@ -241,12 +241,12 @@ public static class AdminEndpoints
             decimal total = realized + open;
             decimal pool = all.Count * strategyOptions.Value.InitialCapital;
             decimal pct = pool > 0 ? total / pool * 100m : 0m;
+            decimal openPct = pool > 0 ? open / pool * 100m : 0m;
 
-            var byDirection = await tradeLogs.SumAllRealizedPnlByDirectionAsync(ct).ConfigureAwait(false);
             decimal openLong = metricsList.Where(m => m.PositionState == "long").Sum(m => m.PositionPnl ?? 0m);
             decimal openShort = metricsList.Where(m => m.PositionState == "short").Sum(m => m.PositionPnl ?? 0m);
-            decimal longs = byDirection.Longs + openLong;
-            decimal shorts = byDirection.Shorts + openShort;
+            decimal longs = openLong;
+            decimal shorts = openShort;
             decimal longsPct = pool > 0 ? longs / pool * 100m : 0m;
             decimal shortsPct = pool > 0 ? shorts / pool * 100m : 0m;
 
@@ -258,6 +258,8 @@ public static class AdminEndpoints
                 $"metrics tracked: {metricsList.Count}\n" +
                 $"total pnl: {total.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)}\n" +
                 $"total pnl pct: {pct.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)}\n" +
+                $"total unrealized pnl: {open.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)}\n" +
+                $"total unrealized pnl pct: {openPct.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)}\n" +
                 $"longs pnl: {longs.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)}\n" +
                 $"longs pnl pct: {longsPct.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)}\n" +
                 $"shorts pnl: {shorts.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)}\n" +
