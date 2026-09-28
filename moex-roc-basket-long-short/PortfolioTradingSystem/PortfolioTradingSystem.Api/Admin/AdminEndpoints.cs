@@ -117,12 +117,11 @@ public static class AdminEndpoints
             decimal pct = pool > 0 ? total / pool * 100m : 0m;
             decimal openPct = pool > 0 ? open / pool * 100m : 0m;
 
-            decimal openLong = metricsList.Where(m => m.PositionState == "long").Sum(m => m.PositionPnl ?? 0m);
-            decimal openShort = metricsList.Where(m => m.PositionState == "short").Sum(m => m.PositionPnl ?? 0m);
-            decimal longs = openLong;
-            decimal shorts = openShort;
-            decimal longsPct = pool > 0 ? longs / pool * 100m : 0m;
-            decimal shortsPct = pool > 0 ? shorts / pool * 100m : 0m;
+            // Open positions only: the long/short split of REALIZED PnL is not shown.
+            decimal openLongs = metricsList.Where(m => m.PositionState == "long").Sum(m => m.PositionPnl ?? 0m);
+            decimal openShorts = metricsList.Where(m => m.PositionState == "short").Sum(m => m.PositionPnl ?? 0m);
+            decimal openLongsPct = pool > 0 ? openLongs / pool * 100m : 0m;
+            decimal openShortsPct = pool > 0 ? openShorts / pool * 100m : 0m;
 
             return Results.Text(
                 $"Portfolio Trading System\n" +
@@ -134,10 +133,10 @@ public static class AdminEndpoints
                 $"total pnl pct: {pct.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)}\n" +
                 $"total unrealized pnl: {open.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)}\n" +
                 $"total unrealized pnl pct: {openPct.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)}\n" +
-                $"longs pnl: {longs.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)}\n" +
-                $"longs pnl pct: {longsPct.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)}\n" +
-                $"shorts pnl: {shorts.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)}\n" +
-                $"shorts pnl pct: {shortsPct.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)}");
+                $"longs unrealized pnl: {openLongs.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)}\n" +
+                $"longs unrealized pnl pct: {openLongsPct.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)}\n" +
+                $"shorts unrealized pnl: {openShorts.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)}\n" +
+                $"shorts unrealized pnl pct: {openShortsPct.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)}");
         });
 
         app.MapGet($"{rootPrefix}/metrics", (IMetricsStore metrics) =>
