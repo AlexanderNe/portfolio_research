@@ -5,7 +5,7 @@ using PortfolioTradingSystem.Domain.Models;
 
 namespace PortfolioTradingSystem.Infrastructure.Persistence;
 
-/// <summary>Creates the schema (EnsureCreated) and idempotently seeds the 39 tradable stocks.</summary>
+/// <summary>Creates the schema (EnsureCreated) and seeds the 39 tradable stocks into an empty database.</summary>
 public interface IDbInitializer
 {
     Task InitializeAsync(CancellationToken ct);
@@ -33,28 +33,25 @@ public sealed class DbInitializer : IDbInitializer
                 _logger.LogInformation("Database schema created");
             }
 
-            var existing = await db.Instruments.Select(x => x.Ticker).ToListAsync(ct).ConfigureAwait(false);
-            if (existing.Any())
+            // Seed only an empty database. Topping up missing tickers on every start
+            // (the old behaviour) resurrected every instrument the operator had
+            // deleted - POLY, for one, is delisted.
+            if (await db.Instruments.AnyAsync(ct).ConfigureAwait(false))
+            {
                 return;
+            }
 
-            int added = 0;
             foreach (var ticker in SeedTickers)
             {
-                if (existing.Contains(ticker))
-                {
-                    continue;
-                }
-
                 db.Instruments.Add(new Instrument
                 {
                     Ticker = ticker,
                     ProcessingStatus = ProcessingStatus.Paused,
                 });
-                added++;
             }
 
             await db.SaveChangesAsync(ct).ConfigureAwait(false);
-            _logger.LogInformation("Database initialized: {Existing} instruments present, {Added} new seeds added", existing.Count, added);
+            _logger.LogInformation("Database initialized: {Added} instruments seeded (all Paused)", SeedTickers.Length);
         }
         catch (Exception ex)
         {

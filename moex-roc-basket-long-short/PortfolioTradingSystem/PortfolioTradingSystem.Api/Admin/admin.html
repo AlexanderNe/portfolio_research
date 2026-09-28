@@ -405,10 +405,10 @@ async function refresh() {
     const pnlPctMatch = text.match(/total pnl pct:\s*([-+]?[0-9.]+)/);
     const totalUnrlMatch = text.match(/total unrealized pnl:\s*([-+]?[0-9.]+)/);
     const totalUnrlPctMatch = text.match(/total unrealized pnl pct:\s*([-+]?[0-9.]+)/);
-    const longsMatch = text.match(/longs pnl:\s*([-+]?[0-9.]+)/);
-    const shortsMatch = text.match(/shorts pnl:\s*([-+]?[0-9.]+)/);
-    const longsPctMatch = text.match(/longs pnl pct:\s*([-+]?[0-9.]+)/);
-    const shortsPctMatch = text.match(/shorts pnl pct:\s*([-+]?[0-9.]+)/);
+    const longsMatch = text.match(/longs unrealized pnl:\s*([-+]?[0-9.]+)/);
+    const shortsMatch = text.match(/shorts unrealized pnl:\s*([-+]?[0-9.]+)/);
+    const longsPctMatch = text.match(/longs unrealized pnl pct:\s*([-+]?[0-9.]+)/);
+    const shortsPctMatch = text.match(/shorts unrealized pnl pct:\s*([-+]?[0-9.]+)/);
     document.getElementById("globalState").textContent = "state: " + (stateMatch ? stateMatch[1] : "?");
     document.getElementById("engineCount").textContent = "engines: " + (engMatch ? engMatch[1] : "?");
     document.getElementById("counts").textContent = "instruments: " + (cntMatch ? cntMatch[1] : "?") + " (running: " + (cntMatch ? cntMatch[2] : "?") + ")";

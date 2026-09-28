@@ -63,6 +63,32 @@ public class InstrumentEngineTests
     }
 
     [Fact]
+    public async Task RestartInsideTheEntryWindowDoesNotReEnterAfterTodaysExit()
+    {
+        // The previous process was stopped out at 10:02 today; the operator hits
+        // Pause/Resume at 10:05. The "exited this session" guard lived only in
+        // memory, so the fresh engine saw its first candle inside the entry window
+        // and advised a new entry right after the exit - the B1 defect via restart.
+        await using var h = new EngineHarness(Atr9Bars(longSignal: true));
+        h.TradeLogs.Entries.Add(new TradeLogEntry
+        {
+            Ticker = "TST",
+            Direction = SignalDirection.Long,
+            ExitReason = ExitReason.StopLoss,
+            EntryTime = new DateTimeOffset(2026, 1, 9, 10, 0, 0, Msk),
+            ExitTime = new DateTimeOffset(2026, 1, 12, 10, 2, 0, Msk),
+        });
+        await h.StartAsync();
+
+        await h.FeedAsync(Minute(12, 10, 5, 100m, 101m, 99m, 100m));
+        Assert.Empty(h.Journal.Opens);
+
+        // The next session is a normal one again.
+        await h.FeedAsync(Minute(13, 10, 0, 100m, 101m, 99m, 100m));
+        Assert.Single(h.Journal.Opens);
+    }
+
+    [Fact]
     public async Task EntryIsStillAdvisedWhenTheEngineStartsInsideTheEntryWindow()
     {
         await using var h = new EngineHarness(Atr9Bars(longSignal: true));
@@ -126,6 +152,101 @@ public class InstrumentEngineTests
         var open = Assert.Single(h.Journal.Opens);
         Assert.Equal(SignalDirection.Short, open.Direction);
         Assert.Equal(100m, open.EntryPrice);
+    }
+
+    [Fact]
+    public async Task WeekendCandlesDoNotStartASession()
+    {
+        await using var h = new EngineHarness(Atr9Bars(longSignal: true));
+        await h.StartAsync();
+        int warmUpBars = h.Engine.GetDailyBars().Count;
+
+        // Saturday 10:00 and Sunday 21:28 (MOEX weekend session, T-Bank dealer
+        // weekend trading). The research series has no weekend bars, so neither may
+        // advise an entry or become a "day" of the ROC/ATR windows.
+        await h.FeedAsync(
+            Minute(10, 10, 0, 100m, 101m, 99m, 100m),
+            Minute(11, 21, 28, 100m, 101m, 99m, 100m));
+        Assert.Empty(h.Journal.Opens);
+
+        // Monday's 10:00 candle is the first session after Friday: entry at its open.
+        await h.FeedAsync(Minute(12, 10, 0, 103m, 104m, 102m, 103m));
+        var open = Assert.Single(h.Journal.Opens);
+        Assert.Equal(103m, open.EntryPrice);
+        Assert.Equal(warmUpBars, h.Engine.GetDailyBars().Count);
+    }
+
+    [Fact]
+    public async Task WeekendCandleNeitherStopsNorFlipsTheOpenPosition()
+    {
+        var position = new OpenPosition
+        {
+            Ticker = "TST",
+            Direction = SignalDirection.Long,
+            Units = 500,
+            EntryPrice = 100m,
+            StopLoss = 82m,
+            TakeProfit = 127m,
+            AtrAtEntry = 9m,
+            OpenCommission = 20m,
+            EntryTime = new DateTimeOffset(2026, 1, 9, 10, 0, 0, Msk),
+        };
+
+        await using var h = new EngineHarness(Atr9Bars(longSignal: false));
+        h.Positions.Current = position;
+        await h.StartAsync();
+
+        // Saturday trades through the stop and the pending signal is SHORT: before
+        // the fix this flipped the LONG at the Saturday open.
+        await h.FeedAsync(Minute(10, 10, 0, 100m, 100m, 70m, 75m));
+        Assert.Empty(h.Journal.Closes);
+        Assert.Empty(h.Journal.Opens);
+
+        // The flip happens where the research puts it: at Monday's open.
+        await h.FeedAsync(Minute(12, 10, 0, 90m, 91m, 89m, 90m));
+        var close = Assert.Single(h.Journal.Closes);
+        Assert.Equal(ExitReason.SignalReversal, close.ExitReason);
+        Assert.Equal(90m, close.ExitPrice);
+        Assert.Equal(SignalDirection.Short, Assert.Single(h.Journal.Opens).Direction);
+    }
+
+    [Fact]
+    public async Task StaleCandleFromAnEarlierDayDoesNotReopenThatSession()
+    {
+        await using var h = new EngineHarness(Atr9Bars(longSignal: true));
+        await h.StartAsync();
+        await h.FeedAsync(Minute(13, 10, 0, 100m, 101m, 99m, 100m));
+        Assert.Single(h.Journal.Opens);
+        int bars = h.Engine.GetDailyBars().Count;
+
+        // A late copy of Monday's last minute arrives after Tuesday's session began.
+        // Before the fix it finalized Tuesday after one minute, opened a "Monday"
+        // session, and the next Tuesday candle finalized that one too: two bogus
+        // bars in the ROC/ATR windows.
+        await h.FeedAsync(
+            Minute(12, 18, 49, 90m, 90m, 90m, 90m),
+            Minute(13, 10, 1, 100m, 101m, 99m, 100m));
+
+        Assert.Equal(bars, h.Engine.GetDailyBars().Count);
+        Assert.Single(h.Journal.Opens);
+        Assert.Empty(h.Journal.Closes);
+    }
+
+    [Fact]
+    public async Task CandleOfTheLastWarmUpDayIsNotCountedTwice()
+    {
+        await using var h = new EngineHarness(Atr9Bars(longSignal: true));
+        await h.StartAsync();
+        var lastWarmUpBar = h.Engine.GetDailyBars()[^1];
+
+        // A minute of the day the warm-up history already closed (e.g. the last
+        // candle re-sent right after subscribing) must not become a second bar of
+        // that day once the next session starts.
+        await h.FeedAsync(new Candle(lastWarmUpBar.Time.AddHours(5), 15m, 15m, 15m, 15m, 1L));
+        await h.FeedAsync(Minute(12, 10, 0, 100m, 101m, 99m, 100m));
+
+        var days = h.Engine.GetDailyBars().Select(b => DateOnly.FromDateTime(b.Time.ToOffset(Msk).DateTime)).ToList();
+        Assert.Equal(days.Count, days.Distinct().Count());
     }
 
     [Fact]

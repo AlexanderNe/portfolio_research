@@ -1,5 +1,7 @@
 # Код-ревью: `moex-roc-basket-long-short`
 
+> **Повторное ревью (2026-09-28)** изменений после PR #1 — в [`CODE_REVIEW_2.md`](CODE_REVIEW_2.md).
+
 **Дата:** 2026-09-12 · **Ревизия:** `49e4de8` (main) · **Объём:** ~2 850 строк Python (research) + ~6 100 строк C#/HTML (PortfolioTradingSystem)
 
 ---

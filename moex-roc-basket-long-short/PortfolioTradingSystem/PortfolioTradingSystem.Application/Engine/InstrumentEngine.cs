@@ -41,6 +41,8 @@ public sealed class InstrumentEngine : IAsyncDisposable
 
     private Candle? _sessionBar;
     private DateOnly _sessionDate;
+    private DateOnly _lastCompletedDay;
+    private DateOnly? _restoredExitDay;
     private bool _enteredThisSession;
     private bool _exitedThisSession;
     private bool _sessionOpenObserved;
@@ -283,6 +285,7 @@ public sealed class InstrumentEngine : IAsyncDisposable
         lock (_stateLock)
         {
             _state.WarmUp(bars);
+            _lastCompletedDay = bars.Count > 0 ? bars[^1].Time.ToMoscowDate() : DateOnly.MinValue;
         }
 
         lock (_barsLock)
@@ -299,6 +302,17 @@ public sealed class InstrumentEngine : IAsyncDisposable
         });
 
         decimal realized = await _tradeLogs.SumRealizedPnlAsync(InstrumentId, ct).ConfigureAwait(false);
+
+        // "Already exited this session" has to survive a restart: resumed inside
+        // the entry window right after a stop or target, the fresh engine advised
+        // a new entry at a price that was gone (the same-session re-entry defect).
+        var lastTrade = (await _tradeLogs.GetByInstrumentAsync(InstrumentId, 1, ct).ConfigureAwait(false))
+            .FirstOrDefault();
+        lock (_stateLock)
+        {
+            _restoredExitDay = lastTrade?.ExitTime.ToMoscowDate();
+        }
+
         var open = await _positions.GetOpenAsync(InstrumentId, ct).ConfigureAwait(false);
         if (open is not null)
         {
@@ -386,6 +400,32 @@ public sealed class InstrumentEngine : IAsyncDisposable
 
     private async Task ProcessMinuteAsync(Candle minute, CancellationToken ct)
     {
+        DateOnly mskDate = minute.Time.ToMoscowDate();
+
+        // Session days only move forward. A candle from a day that is already a
+        // completed daily bar (warm-up history or a finalized session), or from
+        // before the current session, would reopen a session that is over:
+        // today's bar was finalized after a single minute and a day went into the
+        // ROC and ATR windows twice.
+        bool stale;
+        lock (_stateLock)
+        {
+            stale = mskDate <= _lastCompletedDay || mskDate < _sessionDate;
+        }
+
+        if (stale)
+        {
+            _logger.LogWarning(
+                "Ignoring stale candle {Time:O} for {Ticker}: its day is already closed",
+                minute.Time, Ticker);
+            _metrics.Update(InstrumentId, m =>
+            {
+                m.LastProcessedBarTime = DateTimeOffset.UtcNow;
+                m.BarsProcessed++;
+            });
+            return;
+        }
+
         // MOEX delivers pre-open (morning-session) candles on the same Moscow date
         // before the 10:00 main-session open. The strategy's daily bar and its
         // entry/reversal decision both belong to the main session, so a pre-open
@@ -397,7 +437,11 @@ public sealed class InstrumentEngine : IAsyncDisposable
         //  * on a continuously running engine it treated the pre-open candle as the
         //    session open and advised the fill at a ~09:00 price.
         // The 10:00 candle starts the session; earlier candles are seen but ignored.
-        if (minute.Time.ToMoscow().TimeOfDay < MoscowClock.SessionOpen)
+        // Weekend candles are ignored the same way: the research trades Monday to
+        // Friday only, while the feed also carries MOEX weekend sessions and T-Bank
+        // dealer weekend candles. Letting them in advised entries and flips on a
+        // Saturday and pushed extra "days" into the ROC and ATR windows.
+        if (minute.Time.ToMoscow().TimeOfDay < MoscowClock.SessionOpen || !MoscowClock.IsWeekday(mskDate))
         {
             _metrics.Update(InstrumentId, m =>
             {
@@ -409,7 +453,6 @@ public sealed class InstrumentEngine : IAsyncDisposable
             return;
         }
 
-        DateOnly mskDate = minute.Time.ToMoscowDate();
         OpenPosition? opened = null;
         TradeClosedEvent? closed = null;
         Candle? finalized = null;
@@ -428,6 +471,7 @@ public sealed class InstrumentEngine : IAsyncDisposable
                 if (_sessionBar is { } previous)
                 {
                     _state.FinalizeDay(previous);
+                    _lastCompletedDay = _sessionDate;
                     finalized = previous;
                 }
 
@@ -435,7 +479,7 @@ public sealed class InstrumentEngine : IAsyncDisposable
                 _sessionOpenObserved = sawPreviousSession || IsAtSessionOpen(minute.Time);
                 _sessionBar = minute with { IsComplete = _sessionOpenObserved };
                 _enteredThisSession = false;
-                _exitedThisSession = false;
+                _exitedThisSession = mskDate == _restoredExitDay;
                 _lastMinuteTime = minute.Time;
                 _lastMinuteVolume = minute.Volume;
             }

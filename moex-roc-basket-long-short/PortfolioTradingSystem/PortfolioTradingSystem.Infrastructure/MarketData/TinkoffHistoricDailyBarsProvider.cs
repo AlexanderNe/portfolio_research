@@ -43,9 +43,14 @@ public sealed class TinkoffHistoricDailyBarsProvider : IHistoricDailyBarsProvide
             },
             new CallOptions(headers: _connection.Metadata, cancellationToken: ct)).ConfigureAwait(false);
 
+        // Weekend bars are dropped for the same reason the engine ignores weekend
+        // candles: the research series is Monday-Friday only, so a weekend bar in
+        // the warm-up would shift the ROC window and feed ATR a day the model
+        // never saw.
         var bars = response.Candles
             .Select(c => TinkoffMappers.ToCandle(c))
-            .Where(c => MoscowDate(c.Time) < MoscowDate(DateTimeOffset.UtcNow))
+            .Where(c => MoscowDate(c.Time) < MoscowDate(DateTimeOffset.UtcNow)
+                        && IsWeekday(MoscowDate(c.Time)))
             .OrderBy(c => c.Time)
             .ToList();
 
@@ -59,7 +64,8 @@ public sealed class TinkoffHistoricDailyBarsProvider : IHistoricDailyBarsProvide
 
     public async Task<Candle?> GetCurrentDayBarAsync(string instrumentId, CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(instrumentId))
+        DateOnly today = MoscowDate(DateTimeOffset.UtcNow);
+        if (string.IsNullOrWhiteSpace(instrumentId) || !IsWeekday(today))
         {
             return null;
         }
@@ -76,7 +82,6 @@ public sealed class TinkoffHistoricDailyBarsProvider : IHistoricDailyBarsProvide
             },
             new CallOptions(headers: _connection.Metadata, cancellationToken: ct)).ConfigureAwait(false);
 
-        DateOnly today = MoscowDate(DateTimeOffset.UtcNow);
         return response.Candles
             .Select(c => TinkoffMappers.ToCandle(c))
             .Where(c => MoscowDate(c.Time) == today)
@@ -85,4 +90,6 @@ public sealed class TinkoffHistoricDailyBarsProvider : IHistoricDailyBarsProvide
     }
 
     private static DateOnly MoscowDate(DateTimeOffset t) => Application.Engine.MoscowClock.ToMoscowDate(t);
+
+    private static bool IsWeekday(DateOnly day) => Application.Engine.MoscowClock.IsWeekday(day);
 }

@@ -84,6 +84,21 @@ agent, not for end users (see `README.md` for user/developer docs).
   "long position, pending short, never flips" report. A continuously running engine
   instead advised the fill at the ~09:00 pre-open price. Regression tests:
   `PreOpenCandleDoesNotStealTheSessionOpen`, `PreOpenCandleDoesNotDisableTheOpenReversal`.
+- Weekend candles (MSK Saturday/Sunday) are ignored the same way, and weekend bars
+  are dropped from the T-Bank daily history (`MoscowClock.IsWeekday`): the research
+  series is Monday-Friday only (`moex_data_downloader.py` drops weekend bars), while
+  the feed carries MOEX weekend sessions and T-Bank dealer weekend candles. Before
+  2026-09-28 they started sessions: entries/flips on Saturday, extra "days" in the
+  ROC/ATR windows. Working Saturdays are dropped too - exactly as in the research.
+  Tests: `WeekendCandlesDoNotStartASession`, `WeekendCandleNeitherStopsNorFlipsTheOpenPosition`.
+- Session days only move forward: a candle dated on/before the last completed daily
+  bar (warm-up or finalized) or before the current session is logged as stale and
+  ignored. Without it a late candle of a closed day finalized today after one minute
+  and put a day into the ROC/ATR windows twice. Tests: `StaleCandleFromAnEarlierDay...`,
+  `CandleOfTheLastWarmUpDayIsNotCountedTwice`.
+- The same-session exit guard survives restarts: warm-up reads the instrument's
+  latest trade and a session on its exit date starts with `_exitedThisSession=true`
+  (`RestartInsideTheEntryWindowDoesNotReEnterAfterTodaysExit`).
 - Intraday SL/TP checked only for positions that existed BEFORE the candle.
 - Sizing: `units = floor(risk%·cash/(SlAtr·ATR))`, cap `floor(leverage·cash/notional)`,
   `SL=entry∓SlAtr·ATR`, `TP=entry±TpAtr·ATR`, commission both sides, SL before TP.
@@ -118,9 +133,10 @@ agent, not for end users (see `README.md` for user/developer docs).
   index on `OpenPositions.InstrumentId` added 2026-09-12 is exactly such a change.
 - `TinkoffMappers.TodayMoscowStart` is a METHOD. As a static readonly field it froze
   at process start and stale-dated every warm-up after long uptime.
-- Sunday/Moscow calendar anomalies can produce surprising candle timestamps (e.g. an
-  entry at 21:28 Moscow on a non-trading Sunday in the Sept 2026 session); flag
-  before shipping changes, don't silently "fix".
+- The "entry at 21:28 Moscow on a non-trading Sunday" (Sept 2026) was a weekend
+  candle starting a session; weekend candles are now ignored (see Engine behavior).
+  Still unverified: which `Candle.CandleSourceType` (Exchange / DealerWeekend) such
+  candles carry - the stream request does not set a source.
 - Admin chart (`GET /api/instruments/{id}/chart-data`) anchors every signal to its
   Moscow calendar day: it appends the in-progress day bar via
   `IHistoricDailyBarsProvider.GetCurrentDayBarAsync` when the engine has none (e.g.
