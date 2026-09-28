@@ -358,10 +358,19 @@ public static class AdminEndpoints
             bool hasTodayCandle = candleList.Any(c => MoscowClock.ToMoscowDate(c.Time) == today);
             if (!hasTodayCandle && historyInstrumentId.Length > 0)
             {
-                var todayBar = await history.GetCurrentDayBarAsync(historyInstrumentId, ct).ConfigureAwait(false);
-                if (todayBar is not null)
+                // Only an anchor for today's markers: T-Bank being unavailable (or
+                // rate limiting) must not turn the whole chart into a 500.
+                try
                 {
-                    candleList.Add(todayBar.Value);
+                    var todayBar = await history.GetCurrentDayBarAsync(historyInstrumentId, ct).ConfigureAwait(false);
+                    if (todayBar is not null)
+                    {
+                        candleList.Add(todayBar.Value);
+                    }
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    logger.LogWarning(ex, "Chart {Ticker}: current-day bar unavailable", instrument.Ticker);
                 }
             }
 
