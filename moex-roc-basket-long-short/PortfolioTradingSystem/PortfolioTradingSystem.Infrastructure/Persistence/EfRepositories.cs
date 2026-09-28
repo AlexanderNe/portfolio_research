@@ -294,11 +294,16 @@ public sealed class EfSignalLogRepository : ISignalLogRepository
     public async Task<IReadOnlyList<SignalLogEntry>> GetByInstrumentAsync(Guid instrumentId, int limit, CancellationToken ct)
     {
         await using var db = await _factory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        // A signal_reversal flip logs its close and its open with ONE timestamp.
+        // The close came first; without the Type tie-break the pair came back in
+        // arbitrary order and a flip read as "opened short, then closed long".
         return await db.SignalLogs.AsNoTracking()
             .Where(x => x.InstrumentId == instrumentId)
             .OrderByDescending(x => x.Timestamp)
+            .ThenBy(x => x.Type == SignalType.PositionClosed ? 1 : 0)
             .Take(limit)
             .OrderBy(x => x.Timestamp)
+            .ThenBy(x => x.Type == SignalType.PositionOpened ? 1 : 0)
             .ToListAsync(ct).ConfigureAwait(false);
     }
 
@@ -316,7 +321,9 @@ public sealed class EfSignalLogRepository : ISignalLogRepository
         var items = await query
             // Id breaks ties: ordering by Timestamp alone makes paging unstable
             // when several signals share a timestamp (rows repeat or vanish).
+            // Before it, a flip's open (newer) goes above its close.
             .OrderByDescending(x => x.Timestamp)
+            .ThenBy(x => x.Type == SignalType.PositionClosed ? 1 : 0)
             .ThenByDescending(x => x.Id)
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
