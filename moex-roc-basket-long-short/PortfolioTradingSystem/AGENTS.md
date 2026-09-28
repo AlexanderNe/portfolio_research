@@ -91,6 +91,11 @@ agent, not for end users (see `README.md` for user/developer docs).
   2026-09-28 they started sessions: entries/flips on Saturday, extra "days" in the
   ROC/ATR windows. Working Saturdays are dropped too - exactly as in the research.
   Tests: `WeekendCandlesDoNotStartASession`, `WeekendCandleNeitherStopsNorFlipsTheOpenPosition`.
+- Session days only move forward: a candle dated on/before the last completed daily
+  bar (warm-up or finalized) or before the current session is logged as stale and
+  ignored. Without it a late candle of a closed day finalized today after one minute
+  and put a day into the ROC/ATR windows twice. Tests: `StaleCandleFromAnEarlierDay...`,
+  `CandleOfTheLastWarmUpDayIsNotCountedTwice`.
 - Intraday SL/TP checked only for positions that existed BEFORE the candle.
 - Sizing: `units = floor(risk%·cash/(SlAtr·ATR))`, cap `floor(leverage·cash/notional)`,
   `SL=entry∓SlAtr·ATR`, `TP=entry±TpAtr·ATR`, commission both sides, SL before TP.

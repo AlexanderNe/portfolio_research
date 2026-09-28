@@ -185,6 +185,45 @@ public class InstrumentEngineTests
     }
 
     [Fact]
+    public async Task StaleCandleFromAnEarlierDayDoesNotReopenThatSession()
+    {
+        await using var h = new EngineHarness(Atr9Bars(longSignal: true));
+        await h.StartAsync();
+        await h.FeedAsync(Minute(13, 10, 0, 100m, 101m, 99m, 100m));
+        Assert.Single(h.Journal.Opens);
+        int bars = h.Engine.GetDailyBars().Count;
+
+        // A late copy of Monday's last minute arrives after Tuesday's session began.
+        // Before the fix it finalized Tuesday after one minute, opened a "Monday"
+        // session, and the next Tuesday candle finalized that one too: two bogus
+        // bars in the ROC/ATR windows.
+        await h.FeedAsync(
+            Minute(12, 18, 49, 90m, 90m, 90m, 90m),
+            Minute(13, 10, 1, 100m, 101m, 99m, 100m));
+
+        Assert.Equal(bars, h.Engine.GetDailyBars().Count);
+        Assert.Single(h.Journal.Opens);
+        Assert.Empty(h.Journal.Closes);
+    }
+
+    [Fact]
+    public async Task CandleOfTheLastWarmUpDayIsNotCountedTwice()
+    {
+        await using var h = new EngineHarness(Atr9Bars(longSignal: true));
+        await h.StartAsync();
+        var lastWarmUpBar = h.Engine.GetDailyBars()[^1];
+
+        // A minute of the day the warm-up history already closed (e.g. the last
+        // candle re-sent right after subscribing) must not become a second bar of
+        // that day once the next session starts.
+        await h.FeedAsync(new Candle(lastWarmUpBar.Time.AddHours(5), 15m, 15m, 15m, 15m, 1L));
+        await h.FeedAsync(Minute(12, 10, 0, 100m, 101m, 99m, 100m));
+
+        var days = h.Engine.GetDailyBars().Select(b => DateOnly.FromDateTime(b.Time.ToOffset(Msk).DateTime)).ToList();
+        Assert.Equal(days.Count, days.Distinct().Count());
+    }
+
+    [Fact]
     public async Task PartiallyObservedSessionDoesNotMoveAtr()
     {
         await using var h = new EngineHarness(Atr9Bars(longSignal: true));
