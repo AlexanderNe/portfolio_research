@@ -105,6 +105,11 @@ advising a fill at a price hours old. An entry is also never advised in a sessio
 in which a position has already been closed - that price is gone by the time the
 stop or target is hit.
 
+**Trading days.** Monday to Friday only, like the research data: weekend candles
+(MOEX weekend sessions, T-Bank dealer weekend trading) neither start a session nor
+trigger SL/TP, and weekend bars are dropped from the warm-up history. A stop that is
+crossed over the weekend is handled at Monday's open (gap fill at the open).
+
 Documented live deviation: intraday SL/TP are also checked on each 1-minute candle
 after the entry candle (research checks daily only). This is not simply "more
 conservative": it also takes winners at the target earlier, so the live trade

@@ -129,6 +129,62 @@ public class InstrumentEngineTests
     }
 
     [Fact]
+    public async Task WeekendCandlesDoNotStartASession()
+    {
+        await using var h = new EngineHarness(Atr9Bars(longSignal: true));
+        await h.StartAsync();
+        int warmUpBars = h.Engine.GetDailyBars().Count;
+
+        // Saturday 10:00 and Sunday 21:28 (MOEX weekend session, T-Bank dealer
+        // weekend trading). The research series has no weekend bars, so neither may
+        // advise an entry or become a "day" of the ROC/ATR windows.
+        await h.FeedAsync(
+            Minute(10, 10, 0, 100m, 101m, 99m, 100m),
+            Minute(11, 21, 28, 100m, 101m, 99m, 100m));
+        Assert.Empty(h.Journal.Opens);
+
+        // Monday's 10:00 candle is the first session after Friday: entry at its open.
+        await h.FeedAsync(Minute(12, 10, 0, 103m, 104m, 102m, 103m));
+        var open = Assert.Single(h.Journal.Opens);
+        Assert.Equal(103m, open.EntryPrice);
+        Assert.Equal(warmUpBars, h.Engine.GetDailyBars().Count);
+    }
+
+    [Fact]
+    public async Task WeekendCandleNeitherStopsNorFlipsTheOpenPosition()
+    {
+        var position = new OpenPosition
+        {
+            Ticker = "TST",
+            Direction = SignalDirection.Long,
+            Units = 500,
+            EntryPrice = 100m,
+            StopLoss = 82m,
+            TakeProfit = 127m,
+            AtrAtEntry = 9m,
+            OpenCommission = 20m,
+            EntryTime = new DateTimeOffset(2026, 1, 9, 10, 0, 0, Msk),
+        };
+
+        await using var h = new EngineHarness(Atr9Bars(longSignal: false));
+        h.Positions.Current = position;
+        await h.StartAsync();
+
+        // Saturday trades through the stop and the pending signal is SHORT: before
+        // the fix this flipped the LONG at the Saturday open.
+        await h.FeedAsync(Minute(10, 10, 0, 100m, 100m, 70m, 75m));
+        Assert.Empty(h.Journal.Closes);
+        Assert.Empty(h.Journal.Opens);
+
+        // The flip happens where the research puts it: at Monday's open.
+        await h.FeedAsync(Minute(12, 10, 0, 90m, 91m, 89m, 90m));
+        var close = Assert.Single(h.Journal.Closes);
+        Assert.Equal(ExitReason.SignalReversal, close.ExitReason);
+        Assert.Equal(90m, close.ExitPrice);
+        Assert.Equal(SignalDirection.Short, Assert.Single(h.Journal.Opens).Direction);
+    }
+
+    [Fact]
     public async Task PartiallyObservedSessionDoesNotMoveAtr()
     {
         await using var h = new EngineHarness(Atr9Bars(longSignal: true));

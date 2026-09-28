@@ -386,6 +386,8 @@ public sealed class InstrumentEngine : IAsyncDisposable
 
     private async Task ProcessMinuteAsync(Candle minute, CancellationToken ct)
     {
+        DateOnly mskDate = minute.Time.ToMoscowDate();
+
         // MOEX delivers pre-open (morning-session) candles on the same Moscow date
         // before the 10:00 main-session open. The strategy's daily bar and its
         // entry/reversal decision both belong to the main session, so a pre-open
@@ -397,7 +399,11 @@ public sealed class InstrumentEngine : IAsyncDisposable
         //  * on a continuously running engine it treated the pre-open candle as the
         //    session open and advised the fill at a ~09:00 price.
         // The 10:00 candle starts the session; earlier candles are seen but ignored.
-        if (minute.Time.ToMoscow().TimeOfDay < MoscowClock.SessionOpen)
+        // Weekend candles are ignored the same way: the research trades Monday to
+        // Friday only, while the feed also carries MOEX weekend sessions and T-Bank
+        // dealer weekend candles. Letting them in advised entries and flips on a
+        // Saturday and pushed extra "days" into the ROC and ATR windows.
+        if (minute.Time.ToMoscow().TimeOfDay < MoscowClock.SessionOpen || !MoscowClock.IsWeekday(mskDate))
         {
             _metrics.Update(InstrumentId, m =>
             {
@@ -409,7 +415,6 @@ public sealed class InstrumentEngine : IAsyncDisposable
             return;
         }
 
-        DateOnly mskDate = minute.Time.ToMoscowDate();
         OpenPosition? opened = null;
         TradeClosedEvent? closed = null;
         Candle? finalized = null;
