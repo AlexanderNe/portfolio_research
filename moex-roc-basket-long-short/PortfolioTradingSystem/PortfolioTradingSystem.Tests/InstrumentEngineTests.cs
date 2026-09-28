@@ -63,6 +63,32 @@ public class InstrumentEngineTests
     }
 
     [Fact]
+    public async Task RestartInsideTheEntryWindowDoesNotReEnterAfterTodaysExit()
+    {
+        // The previous process was stopped out at 10:02 today; the operator hits
+        // Pause/Resume at 10:05. The "exited this session" guard lived only in
+        // memory, so the fresh engine saw its first candle inside the entry window
+        // and advised a new entry right after the exit - the B1 defect via restart.
+        await using var h = new EngineHarness(Atr9Bars(longSignal: true));
+        h.TradeLogs.Entries.Add(new TradeLogEntry
+        {
+            Ticker = "TST",
+            Direction = SignalDirection.Long,
+            ExitReason = ExitReason.StopLoss,
+            EntryTime = new DateTimeOffset(2026, 1, 9, 10, 0, 0, Msk),
+            ExitTime = new DateTimeOffset(2026, 1, 12, 10, 2, 0, Msk),
+        });
+        await h.StartAsync();
+
+        await h.FeedAsync(Minute(12, 10, 5, 100m, 101m, 99m, 100m));
+        Assert.Empty(h.Journal.Opens);
+
+        // The next session is a normal one again.
+        await h.FeedAsync(Minute(13, 10, 0, 100m, 101m, 99m, 100m));
+        Assert.Single(h.Journal.Opens);
+    }
+
+    [Fact]
     public async Task EntryIsStillAdvisedWhenTheEngineStartsInsideTheEntryWindow()
     {
         await using var h = new EngineHarness(Atr9Bars(longSignal: true));

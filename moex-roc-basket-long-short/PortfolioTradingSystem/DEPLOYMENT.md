@@ -183,10 +183,9 @@ error when `Admin:Password` is unset (in which case every request is rejected).
   service working directory.
 - Restarts are expensive: warm-up replays up to 700 daily bars per running engine.
   A restarted engine acts only on a session whose open it observed (first candle
-  within `Strategy:EntryWindowMinutes` of 10:00 MSK), and the "already exited this
-  session" guard lives in memory - a restart inside 10:00-10:15 MSK on a weekday can
-  re-advise an entry right after a same-session exit. Deploy outside that window and
-  prefer `Pause`/`Resume` (one engine) over process restarts (all engines).
+  within `Strategy:EntryWindowMinutes` of 10:00 MSK) and never re-enters after an
+  exit it finds in today's trade log. Prefer `Pause`/`Resume` (one engine) over
+  process restarts (all engines).
 - The DB uses `EnsureCreated`; model changes require recreating the database
   (see README → Persistence). The UNIQUE index on `OpenPositions.InstrumentId`
   is such a change: an existing database must be recreated.

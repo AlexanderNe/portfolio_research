@@ -42,6 +42,7 @@ public sealed class InstrumentEngine : IAsyncDisposable
     private Candle? _sessionBar;
     private DateOnly _sessionDate;
     private DateOnly _lastCompletedDay;
+    private DateOnly? _restoredExitDay;
     private bool _enteredThisSession;
     private bool _exitedThisSession;
     private bool _sessionOpenObserved;
@@ -301,6 +302,17 @@ public sealed class InstrumentEngine : IAsyncDisposable
         });
 
         decimal realized = await _tradeLogs.SumRealizedPnlAsync(InstrumentId, ct).ConfigureAwait(false);
+
+        // "Already exited this session" has to survive a restart: resumed inside
+        // the entry window right after a stop or target, the fresh engine advised
+        // a new entry at a price that was gone (the same-session re-entry defect).
+        var lastTrade = (await _tradeLogs.GetByInstrumentAsync(InstrumentId, 1, ct).ConfigureAwait(false))
+            .FirstOrDefault();
+        lock (_stateLock)
+        {
+            _restoredExitDay = lastTrade?.ExitTime.ToMoscowDate();
+        }
+
         var open = await _positions.GetOpenAsync(InstrumentId, ct).ConfigureAwait(false);
         if (open is not null)
         {
@@ -467,7 +479,7 @@ public sealed class InstrumentEngine : IAsyncDisposable
                 _sessionOpenObserved = sawPreviousSession || IsAtSessionOpen(minute.Time);
                 _sessionBar = minute with { IsComplete = _sessionOpenObserved };
                 _enteredThisSession = false;
-                _exitedThisSession = false;
+                _exitedThisSession = mskDate == _restoredExitDay;
                 _lastMinuteTime = minute.Time;
                 _lastMinuteVolume = minute.Volume;
             }

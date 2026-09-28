@@ -40,6 +40,7 @@ public interface ITradeLogRepository
 {
     Task AddAsync(TradeLogEntry entry, CancellationToken ct);
 
+    /// <summary>Most recent closed trades of the instrument first (by exit time), at most <paramref name="limit"/>.</summary>
     Task<IReadOnlyList<TradeLogEntry>> GetByInstrumentAsync(Guid instrumentId, int limit, CancellationToken ct);
 
     /// <summary>All closed trades for the instrument, ordered by exit time ascending (chart markers).</summary>

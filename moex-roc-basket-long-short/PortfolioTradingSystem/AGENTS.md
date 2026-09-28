@@ -96,6 +96,9 @@ agent, not for end users (see `README.md` for user/developer docs).
   ignored. Without it a late candle of a closed day finalized today after one minute
   and put a day into the ROC/ATR windows twice. Tests: `StaleCandleFromAnEarlierDay...`,
   `CandleOfTheLastWarmUpDayIsNotCountedTwice`.
+- The same-session exit guard survives restarts: warm-up reads the instrument's
+  latest trade and a session on its exit date starts with `_exitedThisSession=true`
+  (`RestartInsideTheEntryWindowDoesNotReEnterAfterTodaysExit`).
 - Intraday SL/TP checked only for positions that existed BEFORE the candle.
 - Sizing: `units = floor(risk%·cash/(SlAtr·ATR))`, cap `floor(leverage·cash/notional)`,
   `SL=entry∓SlAtr·ATR`, `TP=entry±TpAtr·ATR`, commission both sides, SL before TP.
