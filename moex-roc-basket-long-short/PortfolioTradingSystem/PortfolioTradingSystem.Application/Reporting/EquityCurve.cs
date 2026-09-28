@@ -27,8 +27,9 @@ public static class EquityCurve
         decimal commissionRate)
     {
         // Rebuilt from an O(days x trades) double loop: for every day it
-        // re-summed every trade twice. It is now one pass over the trades plus
-        // one pass over the days. Dates are Moscow dates throughout - bar times
+        // re-summed every trade twice. It is now one pass over the trades (plus
+        // their holding days) and one pass over the days per ticker. Dates are
+        // Moscow dates throughout - bar times
         // arrive with the Moscow offset while trade times come back from
         // Postgres in UTC, so .DateTime.Date silently mixed two calendars.
         var closeByDateByTicker = new Dictionary<string, Dictionary<DateOnly, decimal>>(StringComparer.OrdinalIgnoreCase);
@@ -88,10 +89,36 @@ public static class EquityCurve
             dayIndex[days[i]] = i;
         }
 
-        // realized[i] = PnL of trades that closed strictly BEFORE days[i];
-        // a trade is marked to market on its exit day, realized from the next.
-        var realized = new decimal[days.Count + 1];
-        var unrealized = new decimal[days.Count + 1];
+        // Last close on or before each day, per ticker. A day without a bar for a
+        // ticker (a thin name, a paused instrument whose history ends earlier)
+        // keeps its position at the last known price instead of dropping it from
+        // that day's equity - which drew a spurious one-day dip.
+        var closeAtByTicker = new Dictionary<string, decimal?[]>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (ticker, byDate) in closeByDateByTicker)
+        {
+            var closeAt = new decimal?[days.Count];
+            decimal? last = null;
+            for (int i = 0; i < days.Count; i++)
+            {
+                if (byDate.TryGetValue(days[i], out decimal close))
+                {
+                    last = close;
+                }
+
+                closeAt[i] = last;
+            }
+
+            closeAtByTicker[ticker] = closeAt;
+        }
+
+        // realized[i] = PnL of the trades that closed ON days[i]. A trade is marked
+        // to the close on the days it was held overnight and counted at its exit
+        // price on its exit day. It used to be marked to the exit day's close and
+        // realized only the next day, which misstated every exit day - and every
+        // signal_reversal flip day, whose old leg exits at the open - by
+        // (close - exit) x units.
+        var realized = new decimal[days.Count];
+        var unrealized = new decimal[days.Count];
         DateOnly? startDay = null;
 
         foreach (var trade in trades)
@@ -99,21 +126,19 @@ public static class EquityCurve
             var entryDay = trade.EntryTime.ToMoscowDate();
             var exitDay = trade.ExitTime.ToMoscowDate();
             startDay = startDay is null || entryDay < startDay ? entryDay : startDay;
-            if (dayIndex.TryGetValue(exitDay, out int exitIdx) && exitIdx + 1 < realized.Length)
-            {
-                realized[exitIdx + 1] += trade.PnlRub;
-            }
 
-            if (!closeByDateByTicker.TryGetValue(trade.Ticker, out var closes)
-                || !dayIndex.TryGetValue(entryDay, out int from))
+            // Both days were added to the calendar above.
+            int exitIdx = dayIndex[exitDay];
+            realized[exitIdx] += trade.PnlRub;
+
+            if (!closeAtByTicker.TryGetValue(trade.Ticker, out var closeAt))
             {
                 continue;
             }
 
-            int to = dayIndex.TryGetValue(exitDay, out int idx) ? idx : days.Count - 1;
-            for (int i = from; i <= to && i < days.Count; i++)
+            for (int i = dayIndex[entryDay]; i < exitIdx; i++)
             {
-                if (closes.TryGetValue(days[i], out decimal close))
+                if (closeAt[i] is { } close)
                 {
                     unrealized[i] += MarkToMarket(close, (int)trade.Direction, trade.EntryPrice, trade.Units);
                 }
@@ -124,15 +149,14 @@ public static class EquityCurve
         {
             var entryDay = open.EntryTime.ToMoscowDate();
             startDay = startDay is null || entryDay < startDay ? entryDay : startDay;
-            if (!closeByDateByTicker.TryGetValue(ticker, out var closes)
-                || !dayIndex.TryGetValue(entryDay, out int from))
+            if (!closeAtByTicker.TryGetValue(ticker, out var closeAt))
             {
                 continue;
             }
 
-            for (int i = from; i < days.Count; i++)
+            for (int i = dayIndex[entryDay]; i < days.Count; i++)
             {
-                if (closes.TryGetValue(days[i], out decimal close))
+                if (closeAt[i] is { } close)
                 {
                     unrealized[i] += MarkToMarket(close, (int)open.Direction, open.EntryPrice, open.Units);
                 }
