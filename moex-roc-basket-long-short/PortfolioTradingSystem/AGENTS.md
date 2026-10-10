@@ -27,8 +27,10 @@ agent, not for end users (see `README.md` for user/developer docs).
   in-progress day bar). `EquityCurveBuilderTests` covers the daily equity curve
   (`Application.Admin.EquityCurveBuilder`, shared by `/api/equity-data` and
   `/api/instruments/{id}/equity-data`): pool scaling, realized-after-exit day
-  semantics, the open-position mark-to-market fallback and the per-instrument
-  subset of live unrealized metrics. It references Domain + Application; no real
+  semantics, per-instrument trade scoping (a single-instrument curve ignores
+  other instruments' realized PnL), the open-position mark-to-market fallback
+  when no live metrics exist and the per-instrument subset of live unrealized
+  metrics. It references Domain + Application; no real
   broker, database or app state. The builders live in Application (not Api) so
   they are testable; Api's `/details` and `/equity-data` endpoints are thin
   calls. Run `dotnet test PortfolioTradingSystem.Tests`.

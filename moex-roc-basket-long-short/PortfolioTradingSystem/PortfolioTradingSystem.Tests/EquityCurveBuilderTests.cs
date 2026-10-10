@@ -212,6 +212,135 @@ public sealed class EquityCurveBuilderTests
         Assert.Equal(100_600m, single.Equity);
     }
 
+    [Fact]
+    public async Task SingleInstrument_ExcludesOtherInstrumentsRealized()
+    {
+        var history = new FakeHistory
+        {
+            Bars = new[]
+            {
+                TestHelpers.Day(0, 100, 100, 100),
+                TestHelpers.Day(1, 110, 110, 110),
+            },
+        };
+        var trades = new FakeTradeLog
+        {
+            Trades = new[]
+            {
+                new TradeLogEntry
+                {
+                    Ticker = "TSTA", InstrumentId = IdA, Direction = SignalDirection.Long,
+                    Units = 10, EntryPrice = 100, ExitPrice = 110, PnlRub = 100m,
+                    EntryTime = TestHelpers.T0, ExitTime = TestHelpers.T0.AddDays(1),
+                },
+                new TradeLogEntry
+                {
+                    Ticker = "TSTB", InstrumentId = IdB, Direction = SignalDirection.Long,
+                    Units = 50, EntryPrice = 100, ExitPrice = 120, PnlRub = 5_000m,
+                    EntryTime = TestHelpers.T0, ExitTime = TestHelpers.T0.AddDays(1),
+                },
+            },
+        };
+
+        var dto = await Build(
+            new[] { InstA() }, history, trades, new FakePositions(), new FakeMetrics(),
+            TestHelpers.T0.AddDays(30));
+
+        Assert.Equal(100m, dto.Realized);
+        Assert.Equal(100_100m, dto.Equity);
+        Assert.Equal(100_100m, dto.Points[^1].Equity);
+    }
+
+    [Fact]
+    public async Task OpenPosition_NoLiveMetrics_FallsBackToMarkToMarket()
+    {
+        var open = new OpenPosition
+        {
+            InstrumentId = IdA, Ticker = "TSTA", Direction = SignalDirection.Long,
+            Units = 10, EntryPrice = 100, EntryTime = TestHelpers.T0,
+        };
+        var history = new FakeHistory
+        {
+            Bars = new[]
+            {
+                TestHelpers.Day(0, 100, 100, 100),
+                TestHelpers.Day(1, 102, 102, 102),
+                TestHelpers.Day(2, 101, 101, 101),
+                TestHelpers.Day(3, 103, 103, 103),
+            },
+        };
+
+        var dto = await Build(
+            new[] { InstA() },
+            history,
+            new FakeTradeLog(),
+            new FakePositions { ById = new() { [IdA] = open } },
+            new FakeMetrics(),
+            TestHelpers.T0.AddDays(5));
+
+        // No engine metrics: the final point must carry the open position's mark
+        // on the last daily close (103 -> net 29.188), not drop it to 0, so the
+        // "now" equity equals InitialCapital + total PnL like the details page.
+        Assert.Equal(29.188m, dto.Unrealized, 6);
+        Assert.Equal(100_029.188m, dto.Equity, 6);
+        Assert.Equal(100_029.188m, dto.Points[^1].Equity, 6);
+    }
+
+    [Fact]
+    public async Task LastDayClose_OfClosedTrade_NotDoubleCountedInOpenFallback()
+    {
+        var history = new FakeHistory
+        {
+            BarsByUid = new()
+            {
+                ["uid-TSTA"] = new[]
+                {
+                    TestHelpers.Day(0, 100, 100, 100),
+                    TestHelpers.Day(1, 100, 100, 100),
+                    TestHelpers.Day(2, 100, 100, 100),
+                    TestHelpers.Day(3, 103, 103, 103),
+                },
+                ["uid-TSTB"] = new[]
+                {
+                    TestHelpers.Day(0, 100, 100, 100),
+                    TestHelpers.Day(1, 100, 100, 100),
+                    TestHelpers.Day(2, 100, 100, 100),
+                    TestHelpers.Day(3, 110, 110, 110),
+                },
+            },
+        };
+        var trades = new FakeTradeLog
+        {
+            Trades = new[]
+            {
+                new TradeLogEntry
+                {
+                    Ticker = "TSTA", InstrumentId = IdA, Direction = SignalDirection.Long,
+                    Units = 10, EntryPrice = 100, ExitPrice = 103, PnlRub = 100m,
+                    EntryTime = TestHelpers.T0, ExitTime = TestHelpers.T0.AddDays(3),
+                },
+            },
+        };
+        var open = new OpenPosition
+        {
+            InstrumentId = IdB, Ticker = "TSTB", Direction = SignalDirection.Long,
+            Units = 10, EntryPrice = 100, EntryTime = TestHelpers.T0,
+        };
+
+        var dto = await Build(
+            new[] { InstA(), InstB() }, history, trades,
+            new FakePositions { ById = new() { [IdB] = open } },
+            new FakeMetrics(),
+            TestHelpers.T0.AddDays(30));
+
+        // A's trade closed ON the last day: its same-day mark (29.188) stays in
+        // the day's curve, but it is already realized, so the final unrealized
+        // must be B's OPEN-position mark on the last close (110 -> 99.16) only -
+        // not the sum (128.348). Total = pool 200000 + realized 100 + 99.16.
+        Assert.Equal(99.16m, dto.Unrealized, 6);
+        Assert.Equal(200_199.16m, dto.Equity, 6);
+    }
+
     private sealed class FakeSupervisor : IEngineSupervisor
     {
         public IReadOnlyList<InstrumentEngine> Engines { get; } = Array.Empty<InstrumentEngine>();
@@ -228,9 +357,10 @@ public sealed class EquityCurveBuilderTests
     private sealed class FakeHistory : IHistoricDailyBarsProvider
     {
         public IReadOnlyList<Candle> Bars { get; init; } = Array.Empty<Candle>();
+        public Dictionary<string, IReadOnlyList<Candle>> BarsByUid { get; init; } = new();
 
         public Task<IReadOnlyList<Candle>> GetDailyBarsAsync(string instrumentId, int maxBars, CancellationToken ct)
-            => Task.FromResult(Bars);
+            => Task.FromResult(BarsByUid.TryGetValue(instrumentId, out var bars) ? bars : Bars);
 
         public Task<Candle?> GetCurrentDayBarAsync(string instrumentId, CancellationToken ct)
             => Task.FromResult<Candle?>(null);

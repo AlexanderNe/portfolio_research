@@ -40,7 +40,10 @@ public static class EquityCurveBuilder
     {
         decimal pool = instruments.Count * options.InitialCapital;
         decimal commission = options.CommissionPct / 100m;
-        var allTrades = await tradeLogs.GetAllAsync(ct).ConfigureAwait(false);
+        var instrumentIds = instruments.Select(i => i.Id).ToHashSet();
+        var allTrades = (await tradeLogs.GetAllAsync(ct).ConfigureAwait(false))
+            .Where(t => instrumentIds.Contains(t.InstrumentId))
+            .ToList();
 
         var openByTicker = new Dictionary<string, OpenPosition>(StringComparer.OrdinalIgnoreCase);
         foreach (var inst in instruments)
@@ -143,6 +146,7 @@ public static class EquityCurveBuilder
         // a trade is marked to market on its exit day, realized from the next.
         var realized = new decimal[days.Count + 1];
         var unrealized = new decimal[days.Count + 1];
+        var openUnrealized = new decimal[days.Count + 1];
         DateOnly? startDay = null;
 
         foreach (var trade in allTrades)
@@ -187,7 +191,7 @@ public static class EquityCurveBuilder
             {
                 if (closes.TryGetValue(days[i], out decimal close))
                 {
-                    unrealized[i] += MarkToMarket(
+                    openUnrealized[i] += MarkToMarket(
                         close, (int)open.Direction, open.EntryPrice, open.Units,
                         options.PointRub, commission);
                 }
@@ -209,11 +213,19 @@ public static class EquityCurveBuilder
                 continue;
             }
 
-            points.Add(new EquityPointDto(timeByDay[days[i]], pool + realizedRunning + unrealized[i]));
+            points.Add(new EquityPointDto(timeByDay[days[i]], pool + realizedRunning + unrealized[i] + openUnrealized[i]));
         }
 
         decimal totalRealized = allTrades.Sum(t => t.PnlRub);
-        decimal unrl = instruments.Sum(i => metrics.Get(i.Id)?.PositionPnl ?? 0m);
+        // Live "now" mark prefers the engine metrics (intraday). When no instrument
+        // of the set exposes one, fall back to mark-to-market of the OPEN positions
+        // on the last known daily close - the same rule the details page uses, so
+        // equity = InitialCapital + total PnL. Closed trades are never included
+        // here: their same-day mark sits in unrealized[] and they are realized.
+        bool hasLiveMark = instruments.Any(i => metrics.Get(i.Id)?.PositionPnl is not null);
+        decimal unrl = hasLiveMark
+            ? instruments.Sum(i => metrics.Get(i.Id)?.PositionPnl ?? 0m)
+            : days.Count > 0 ? openUnrealized[days.Count - 1] : 0m;
         if (points.Count == 0)
         {
             points.Add(new EquityPointDto(now, pool + unrl));
