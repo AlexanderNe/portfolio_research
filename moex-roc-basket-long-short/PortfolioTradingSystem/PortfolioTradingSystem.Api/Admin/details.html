@@ -23,6 +23,9 @@
   .btn:hover { background: #34445c; }
   #legend { font-size: 12px; color: #8fa3bf; margin-left: auto; }
   main { padding: 16px 20px; }
+  .tabs { display: flex; gap: 8px; margin-bottom: 10px; }
+  .btn.tab { padding: 6px 16px; font-size: 12px; }
+  .btn.tab.active { background: #34445c; border-color: #4d5f7a; color: #fff; font-weight: 600; }
   .chartwrap { position: relative; background: #161d29; border: 1px solid #2c3648; border-radius: 8px; touch-action: pan-y; }
   canvas { display: block; width: 100%; touch-action: pan-y; -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; }
   .tooltip {
@@ -31,6 +34,8 @@
     display: none; white-space: nowrap; z-index: 5; color: #dbe2ec;
   }
   .tooltip b { color: #7fb3e8; }
+  .tooltip .up { color: #7fd18a; }
+  .tooltip .down { color: #e88f8f; }
   .tooltip .mk-entry { color: #7fd18a; }
   .tooltip .mk-exit { color: #e8b36f; }
   .errorbox { display: none; background: #4a1d1d; border: 1px solid #7a3030; color: #ffd2d2; border-radius: 6px; padding: 10px 14px; margin-bottom: 14px; }
@@ -114,6 +119,10 @@
   <div id="legend"></div>
 </header>
 <main>
+  <div class="tabs">
+    <button class="btn tab active" id="tabPrice" title="Price chart with candles and trades">Price</button>
+    <button class="btn tab" id="tabEquity" title="Total equity of this instrument over time">Equity</button>
+  </div>
   <div class="chartwrap">
     <canvas id="cv"></canvas>
     <div class="tooltip" id="tip"></div>
@@ -171,6 +180,13 @@ let priceView = null;
 let _autoMin = 0, _autoMax = 1;
 let panning = null;
 let initialized = false;
+let mode = "price";
+let eqData = null;
+let eqScale = null;
+let eqError = null;
+
+document.getElementById("tabPrice").onclick = () => switchMode("price");
+document.getElementById("tabEquity").onclick = () => switchMode("equity");
 
 function fmtPrice(v) {
   if (v === null || v === undefined || isNaN(v)) return "—";
@@ -232,6 +248,7 @@ async function load() {
       (data.name ? data.name + " " : "") + data.ticker + " — instrument details";
     render();
     renderDetails();
+    if (mode === "equity") loadEquity();
   } catch (err) {
     if (!data) fail("Failed to load instrument details: " + err.message);
   }
@@ -337,6 +354,7 @@ function resize() {
 
 function computeScale() {
   const cs = data.candles || [];
+  PAD.l = 64;
   _autoMin = Infinity; _autoMax = -Infinity;
   cs.forEach(c => {
     if (c.isPlaceholder) return;
@@ -411,11 +429,15 @@ function drawGrid() {
 }
 
 function applyHorizontal(mx, factor) {
-  if (scale.n === 0) return;
-  const fx = Math.min(1, Math.max(0, (mx - PAD.l) / scale.plotW));
+  const s = mode === "equity" ? eqScale : scale;
+  if (!s || s.n === 0) return;
+  const fx = Math.min(1, Math.max(0, (mx - PAD.l) / s.plotW));
   const curFrom = view.from, curTo = view.to;
   const curWidth = curTo - curFrom;
-  const newWidth = Math.min(1, Math.max(Math.min(1, 2 / scale.n), curWidth * factor));
+  const minWidth = mode === "equity"
+    ? Math.min(1, (6 * 3600 * 1000) / Math.max(1, s.maxTime - s.minTime))
+    : Math.min(1, 2 / s.n);
+  const newWidth = Math.min(1, Math.max(minWidth, curWidth * factor));
   const anchor = curFrom + fx * curWidth;
   view.from = anchor - fx * newWidth;
   view.to = view.from + newWidth;
@@ -444,17 +466,18 @@ function zoomVertical(my, factor) {
 }
 
 function panBy(dx, dy) {
-  if (!scale || scale.n === 0) return;
+  const s = mode === "equity" ? eqScale : scale;
+  if (!s || s.n === 0) return;
   if (dx !== 0) {
     const windowFrac = Math.max(1e-6, view.to - view.from);
-    const shift = (dx / scale.plotW) * windowFrac;
+    const shift = (dx / s.plotW) * windowFrac;
     view.from -= shift;
     view.to -= shift;
   }
-  if (dy !== 0) {
-    const span = scale.maxPrice - scale.minPrice;
-    const shift = (dy / scale.plotH) * span;
-    priceView = { min: scale.minPrice + shift, max: scale.maxPrice + shift };
+  if (dy !== 0 && mode === "price") {
+    const span = s.maxPrice - s.minPrice;
+    const shift = (dy / s.plotH) * span;
+    priceView = { min: s.minPrice + shift, max: s.maxPrice + shift };
   }
 }
 
@@ -561,6 +584,172 @@ function buildLegend() {
   document.getElementById("legend").textContent = parts.join("   ·   ");
 }
 
+function fmtMoneyAxis(v) {
+  if (v === null || v === undefined || isNaN(v)) return "—";
+  return Number(v).toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+async function loadEquity() {
+  const id = new URLSearchParams(location.search).get("id");
+  if (!id) return;
+  try {
+    const res = await fetch("/api/instruments/" + id + "/equity-data", { credentials: "same-origin" });
+    if (!res.ok) throw new Error("HTTP " + res.status + ": " + (await res.text()));
+    eqData = await res.json();
+    eqError = null;
+    render();
+  } catch (err) {
+    eqError = "equity unavailable: " + err.message;
+    render();
+  }
+}
+
+function switchMode(m) {
+  if (m === mode) return;
+  mode = m;
+  document.getElementById("tabPrice").classList.toggle("active", m === "price");
+  document.getElementById("tabEquity").classList.toggle("active", m === "equity");
+  view = { from: 0, to: 1 };
+  priceView = null;
+  if (m === "equity" && !eqData) loadEquity();
+  render();
+}
+
+function computeEquityScale() {
+  const pts = (eqData.points || []).filter(p => {
+    const t = new Date(p.time).getTime();
+    return !isNaN(t) && isFinite(Number(p.equity));
+  });
+  const times = pts.map(p => new Date(p.time).getTime());
+  const values = pts.map(p => Number(p.equity));
+  let tMin = Infinity, tMax = -Infinity, eMin = Infinity, eMax = -Infinity;
+  times.forEach(t => { if (t < tMin) tMin = t; if (t > tMax) tMax = t; });
+  values.forEach(e => { if (e < eMin) eMin = e; if (e > eMax) eMax = e; });
+  if (tMax === tMin) { tMin -= 86400000; tMax += 86400000; }
+  const tPad = (tMax - tMin) * 0.03;
+  tMin -= tPad; tMax += tPad;
+  eMin = isFinite(eMin) ? eMin : Number(eqData.initialPool);
+  eMax = isFinite(eMax) ? eMax : Number(eqData.equity);
+  const ePad = Math.max(1, (eMax - eMin) * 0.06);
+  const eVMin = eMin - ePad, eVMax = eMax + ePad;
+  ctx.font = "11px Consolas, monospace";
+  let labelW = 64;
+  for (let i = 0; i <= 6; i++) {
+    labelW = Math.max(labelW, Math.ceil(ctx.measureText(fmtMoneyAxis(eVMin + (eVMax - eVMin) * i / 6)).width) + 12);
+  }
+  PAD.l = Math.min(labelW, Math.floor(W * 0.4));
+  const plotW = W - PAD.l - PAD.r, plotH = H - PAD.t - PAD.b;
+  const windowFrac = Math.max(1e-6, view.to - view.from);
+  eqScale = {
+    n: pts.length, plotW, plotH, windowFrac, tMin, tMax, eMin: eVMin, eMax: eVMax,
+    times, values,
+    xFor: t => PAD.l + ((t - tMin) / (tMax - tMin) - view.from) / windowFrac * plotW,
+    yFor: e => PAD.t + plotH - (e - eVMin) / (eVMax - eVMin) * plotH,
+    minTime: tMin,
+    maxTime: tMax
+  };
+}
+
+function drawEquityGrid() {
+  ctx.strokeStyle = "#232c3b"; ctx.lineWidth = 1;
+  ctx.fillStyle = "#8fa3bf"; ctx.font = "11px Consolas, monospace";
+  ctx.textAlign = "right"; ctx.textBaseline = "middle";
+  for (let i = 0; i <= 6; i++) {
+    const e = eqScale.eMin + (eqScale.eMax - eqScale.eMin) * i / 6;
+    const y = eqScale.yFor(e);
+    ctx.beginPath(); ctx.moveTo(PAD.l, y); ctx.lineTo(W - PAD.r, y); ctx.stroke();
+    ctx.fillText(fmtMoneyAxis(e), PAD.l - 6, y);
+  }
+  if (eqScale.n === 0) return;
+  const labelCount = 6;
+  ctx.textAlign = "center"; ctx.textBaseline = "top";
+  let prevX = -100;
+  for (let i = 0; i < labelCount; i++) {
+    const f = view.from + (i / (labelCount - 1)) * (view.to - view.from);
+    if (f < 0 || f > 1) continue;
+    const t = eqScale.tMin + f * (eqScale.tMax - eqScale.tMin);
+    const x = eqScale.xFor(t);
+    if (x - prevX < 62) continue;
+    prevX = x;
+    ctx.fillText(fmtDay(t), x, H - PAD.b + 6);
+  }
+}
+
+function drawEquityBaseline() {
+  const y = eqScale.yFor(Number(eqData.initialPool));
+  ctx.strokeStyle = "rgba(255,255,255,.22)"; ctx.lineWidth = 1; ctx.setLineDash([5, 5]);
+  ctx.beginPath(); ctx.moveTo(PAD.l, y); ctx.lineTo(W - PAD.r, y); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = "rgba(255,255,255,.5)"; ctx.font = "11px Consolas, monospace";
+  ctx.textAlign = "right"; ctx.textBaseline = "top";
+  ctx.fillText("initial " + fmtMoneyAxis(eqData.initialPool), W - PAD.r - 8, y - 14);
+}
+
+function drawEquityCurve() {
+  if (eqScale.n === 0) return;
+  const current = Number(eqData.equity);
+  const up = current >= Number(eqData.initialPool);
+  const color = up ? "#4da3ff" : "#e88f8f";
+  ctx.strokeStyle = color; ctx.lineWidth = 2;
+  ctx.fillStyle = up ? "rgba(77,163,255,.13)" : "rgba(232,143,143,.13)";
+  ctx.beginPath();
+  ctx.moveTo(PAD.l, eqScale.yFor(eqScale.eMin));
+  for (let i = 0; i < eqScale.n; i++) {
+    ctx.lineTo(eqScale.xFor(eqScale.times[i]), eqScale.yFor(eqScale.values[i]));
+  }
+  ctx.lineTo(W - PAD.r, eqScale.yFor(eqScale.eMin));
+  ctx.closePath();
+  ctx.save();
+  ctx.fill();
+  ctx.restore();
+  ctx.beginPath();
+  for (let i = 0; i < eqScale.n; i++) {
+    const x = eqScale.xFor(eqScale.times[i]);
+    if (i === 0) ctx.moveTo(x, eqScale.yFor(eqScale.values[i]));
+    else ctx.lineTo(x, eqScale.yFor(eqScale.values[i]));
+  }
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(eqScale.xFor(eqScale.times[eqScale.n - 1]), eqScale.yFor(eqScale.values[eqScale.n - 1]), 3.5, 0, Math.PI * 2);
+  ctx.fillStyle = color; ctx.fill();
+}
+
+function buildEquityLegend() {
+  const pix = "·";
+  const ep = Number(eqData.initialPool) || 0;
+  const cur = Number(eqData.equity) || 0;
+  const pct = ep !== 0 ? (cur - ep) / ep * 100 : 0;
+  const parts = [
+    "points: " + (eqData.points || []).length,
+    "realized: " + fmtMoney(eqData.realized),
+    "open: " + fmtMoney(eqData.unrealized),
+    "equity: " + fmtMoneyAxis(eqData.equity) + " (" + fmtPct(pct) + ")"
+  ];
+  if (eqError) parts.push(eqError);
+  document.getElementById("legend").textContent = parts.join("   " + pix + "   ");
+}
+
+function showEquityTipAt(mx, my) {
+  tip.style.display = "none";
+  if (!eqScale || eqScale.n === 0) return;
+  let best = -1, bestDist = Infinity;
+  for (let i = 0; i < eqScale.n; i++) {
+    const d = Math.abs(eqScale.xFor(eqScale.times[i]) - mx);
+    if (d < bestDist) { bestDist = d; best = i; }
+  }
+  if (best < 0 || bestDist > 36) return;
+  const base = Number(eqData.initialPool) || 0;
+  const e = eqScale.values[best];
+  const delta = e - base;
+  const cls = delta >= 0 ? "up" : "down";
+  const pct = base !== 0 ? delta / base * 100 : 0;
+  tip.innerHTML = "<b>" + fmtDay(eqScale.times[best]) + "</b><br>equity: " + fmtMoneyAxis(e) +
+    "<br><span class=\"" + cls + "\">" + (delta >= 0 ? "+" : "") + fmtMoneyAxis(delta) + " RUB (" + fmtPct(pct) + ")</span>";
+  tip.style.display = "block";
+  tip.style.left = (mx + 14) + "px";
+  tip.style.top = (my + 14) + "px";
+}
+
 function defaultView(cs) {
   const arr = cs || [];
   const n = arr.length;
@@ -586,6 +775,23 @@ function defaultView(cs) {
 function render() {
   resize();
   ctx.clearRect(0, 0, W, H);
+  if (mode === "equity") {
+    if (!eqData) {
+      document.getElementById("legend").textContent = eqError || "equity: loading…";
+      return;
+    }
+    computeEquityScale();
+    drawEquityGrid();
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(PAD.l, PAD.t, eqScale.plotW, eqScale.plotH);
+    ctx.clip();
+    drawEquityBaseline();
+    drawEquityCurve();
+    ctx.restore();
+    buildEquityLegend();
+    return;
+  }
   computeScale();
   drawGrid();
   ctx.save();
@@ -601,6 +807,7 @@ function render() {
 }
 
 function showTipAt(mx, my) {
+  if (mode !== "price") { showEquityTipAt(mx, my); return; }
   if (!scale || scale.n === 0) { tip.style.display = "none"; return; }
   const fx = (mx - PAD.l) / Math.max(1, scale.plotW);
   const idx = Math.round((view.from + fx * (view.to - view.from)) * scale.n);
@@ -633,7 +840,7 @@ function showTipAt(mx, my) {
 cv.addEventListener("mousemove", e => {
   const rect = cv.getBoundingClientRect();
   const mx = e.clientX - rect.left;
-  if (!panning) cv.style.cursor = mx < PAD.l ? "ns-resize" : "";
+  if (!panning) cv.style.cursor = mode === "price" && mx < PAD.l ? "ns-resize" : "";
   if (panning) { tip.style.display = "none"; return; }
   showTipAt(mx, e.clientY - rect.top);
 });
@@ -647,13 +854,16 @@ cv.addEventListener("wheel", e => {
   const my = e.clientY - rect.top;
   const factor = e.deltaY > 0 ? 1.15 : 1 / 1.15;
   tip.style.display = "none";
-  // Scrolling on the price axis (left gutter) scales the price range; anywhere
-  // else it scales time. Shift remains the axis-independent shortcut for price.
+  // Price mode: scrolling on the price axis (left gutter) scales the price
+  // range; anywhere else it scales time. Shift remains the axis-independent
+  // shortcut for price. Equity mode only scales time (vertical is fixed math).
+  if (mode !== "price") { zoomHorizontal(mx, factor); return; }
   if (mx < PAD.l || e.shiftKey) zoomVertical(my, factor); else zoomHorizontal(mx, factor);
 }, { passive: false });
 
 document.getElementById("btnReset").onclick = () => {
-  if (!data) return;
+  if (!data && !eqData) return;
+  if (mode === "equity") { view = { from: 0, to: 1 }; render(); return; }
   const dv = defaultView(data.candles);
   view = dv.view;
   priceView = dv.range;
@@ -709,18 +919,20 @@ cv.addEventListener("touchstart", e => {
     // (left gutter) drives price/vertical, the plot drives time/horizontal.
     // Snapshotting the view lets every move recompute the zoom from the START
     // only - deriving it from each frame's already-zoomed width compounds per
-    // frame and feels like acceleration.
-    const zone = clientX - rect.left < PAD.l ? "axis" : "chart";
+    // frame and feels like acceleration. Equity mode runs on the equity scale
+    // and never uses the vertical axis.
+    const s = mode === "equity" ? eqScale : scale;
+    const zone = mode === "equity" ? "chart" : (clientX - rect.left < PAD.l ? "axis" : "chart");
     gesture = {
       dist: touchDist(e.touches[0], e.touches[1]),
       startMidX: clientX,
       startMidY: clientY,
       zone,
       frac: Math.min(1, Math.max(0, zone === "axis"
-        ? (clientY - rect.top - PAD.t) / Math.max(1, scale.plotH)
-        : (clientX - rect.left - PAD.l) / Math.max(1, scale.plotW))),
-      min: scale.minPrice,
-      span: scale.maxPrice - scale.minPrice,
+        ? (clientY - rect.top - PAD.t) / Math.max(1, s ? s.plotH : 1)
+        : (clientX - rect.left - PAD.l) / Math.max(1, s ? s.plotW : 1))),
+      min: s ? s.minPrice : 0,
+      span: s ? s.maxPrice - s.minPrice : 0,
       viewFrom: view.from,
       viewW: view.to - view.from
     };
@@ -733,14 +945,15 @@ cv.addEventListener("touchstart", e => {
       y: e.touches[0].clientY,
       lastX: e.touches[0].clientX,
       lastY: e.touches[0].clientY,
-      zone: e.touches[0].clientX - rect.left < PAD.l ? "axis" : "chart",
+      zone: mode === "equity" ? "chart" : (e.touches[0].clientX - rect.left < PAD.l ? "axis" : "chart"),
       moved: false
     };
   }
 }, { passive: false });
 
 cv.addEventListener("touchmove", e => {
-  if (!scale || scale.n === 0) return;
+  const s = mode === "equity" ? eqScale : scale;
+  if (!s || s.n === 0) return;
   if (e.touches.length >= 2 && gesture) {
     e.preventDefault();
     tip.style.display = "none";
@@ -765,16 +978,21 @@ cv.addEventListener("touchmove", e => {
       const shift = (panY / Math.max(1, scale.plotH)) * newSpan;
       priceView = { min: newMax - newSpan + shift, max: newMax + shift };
     } else {
-      const newWidth = Math.min(1, Math.max(Math.min(1, 2 / scale.n), gesture.viewW * rel));
+      const minWidth = mode === "equity"
+        ? Math.min(1, (6 * 3600 * 1000) / Math.max(1, s.maxTime - s.minTime))
+        : Math.min(1, 2 / s.n);
+      const newWidth = Math.min(1, Math.max(minWidth, gesture.viewW * rel));
       const anchor = gesture.viewFrom + gesture.frac * gesture.viewW;
       const baseFrom = anchor - gesture.frac * newWidth;
-      const shift = (panX / Math.max(1, scale.plotW)) * newWidth;
+      const shift = (panX / Math.max(1, s.plotW)) * newWidth;
       view.from = baseFrom - shift;
       view.to = view.from + newWidth;
       // The two-finger DRAG also pans the price axis in the plot zone (price is
       // not zoomed here, so the span stays the gesture's start span).
-      const pShift = (panY / Math.max(1, scale.plotH)) * gesture.span;
-      priceView = { min: gesture.min + pShift, max: gesture.min + gesture.span + pShift };
+      if (mode === "price") {
+        const pShift = (panY / Math.max(1, s.plotH)) * gesture.span;
+        priceView = { min: gesture.min + pShift, max: gesture.min + gesture.span + pShift };
+      }
     }
     render();
   } else if (e.touches.length === 1 && tap && !gesture) {
@@ -803,7 +1021,8 @@ cv.addEventListener("touchend", e => {
   const remaining = e.touches.length;
   if (remaining < 2) gesture = null;
   if (remaining === 0) {
-    if (tap && !tap.moved && scale && scale.n > 0) {
+    const s = mode === "equity" ? eqScale : scale;
+    if (tap && !tap.moved && s && s.n > 0) {
       const rect = cv.getBoundingClientRect();
       showTipAt(tap.x - rect.left, tap.y - rect.top);
     }

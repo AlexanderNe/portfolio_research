@@ -24,10 +24,14 @@ agent, not for end users (see `README.md` for user/developer docs).
   (`InstrumentDetailsBuilderTests` drives `Application.Admin.InstrumentDetailsBuilder`
   against in-memory fakes: realized/unrealized/total PnL, mark-to-market fallback,
   pending-signal passthrough, the 50-signal limit, placeholder candles and the
-  in-progress day bar). It references Domain + Application; no real broker,
-  database or app state. The details builder lives in Application (not Api) so it
-  is testable; Api's `/details` endpoint is just a thin call. Run
-  `dotnet test PortfolioTradingSystem.Tests`.
+  in-progress day bar). `EquityCurveBuilderTests` covers the daily equity curve
+  (`Application.Admin.EquityCurveBuilder`, shared by `/api/equity-data` and
+  `/api/instruments/{id}/equity-data`): pool scaling, realized-after-exit day
+  semantics, the open-position mark-to-market fallback and the per-instrument
+  subset of live unrealized metrics. It references Domain + Application; no real
+  broker, database or app state. The builders live in Application (not Api) so
+  they are testable; Api's `/details` and `/equity-data` endpoints are thin
+  calls. Run `dotnet test PortfolioTradingSystem.Tests`.
 - Do not log credentials/tokens/secret values. Log only presence flags
   (e.g. `tokenConfigured`).
 

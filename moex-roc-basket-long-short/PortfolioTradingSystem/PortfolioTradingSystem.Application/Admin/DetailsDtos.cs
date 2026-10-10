@@ -50,3 +50,14 @@ public sealed record InstrumentDetailsDto(
     decimal TotalPnlPercent,
     int? PendingSignal,
     IReadOnlyList<SignalLogEntry> Signals);
+
+/// <summary>One point of the (portfolio- or instrument-level) equity curve.</summary>
+public sealed record EquityPointDto(DateTimeOffset Time, decimal Equity);
+
+/// <summary>Payload for the total-equity chart.</summary>
+public sealed record EquityDataDto(
+    IReadOnlyList<EquityPointDto> Points,
+    decimal InitialPool,
+    decimal Realized,
+    decimal Unrealized,
+    decimal Equity);
