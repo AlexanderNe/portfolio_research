@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Options;
+using PortfolioTradingSystem.Application.Admin;
 using PortfolioTradingSystem.Application.Engine;
 using PortfolioTradingSystem.Application.Ports;
 using PortfolioTradingSystem.Domain.Enums;
@@ -17,7 +18,7 @@ public static class AdminEndpoints
 
         app.MapGet("/admin", AdminPage.Serve);
 
-        app.MapGet("/chart", ChartPage.Serve);
+        app.MapGet("/details", DetailsPage.Serve);
 
         app.MapGet("/equity", EquityPage.Serve);
 
@@ -287,13 +288,16 @@ public static class AdminEndpoints
                 : Results.Json(new InstrumentView(instrument, metrics.Get(id)));
         });
 
-        app.MapGet($"{rootPrefix}/instruments/{{id:guid}}/chart-data", async (
+        app.MapGet($"{rootPrefix}/instruments/{{id:guid}}/details", async (
             Guid id,
             IInstrumentRepository instruments,
             IEngineSupervisor supervisor,
             IHistoricDailyBarsProvider history,
             ITradeLogRepository tradeLogs,
             IPositionRepository positions,
+            IMetricsStore metrics,
+            ISignalLogRepository signals,
+            IOptions<StrategyOptions> strategyOptions,
             CancellationToken ct) =>
         {
             var instrument = await instruments.GetByIdAsync(id, ct).ConfigureAwait(false);
@@ -302,117 +306,10 @@ public static class AdminEndpoints
                 return Results.NotFound();
             }
 
-            IReadOnlyList<Candle> candles;
-            var engine = supervisor.GetEngine(id);
-            if (engine is not null)
-            {
-                var bars = engine.GetDailyBars().ToList();
-                if (engine.CurrentSessionBar is { } live && (bars.Count == 0 || bars[^1].Time < live.Time))
-                {
-                    bars.Add(live);
-                }
-
-                candles = bars;
-            }
-            else if (InstrumentEngine.EffectiveInstrumentId(instrument).Length > 0)
-            {
-                candles = await history.GetDailyBarsAsync(
-                    InstrumentEngine.EffectiveInstrumentId(instrument), 700, ct).ConfigureAwait(false);
-            }
-            else
-            {
-                candles = Array.Empty<Candle>();
-            }
-
-            var closedTrades = await tradeLogs.GetAllByInstrumentAsync(id, ct).ConfigureAwait(false);
-            var trades = closedTrades.Select(t => new ChartTradeDto(
-                t.Direction == SignalDirection.Long ? "Long" : "Short",
-                t.EntryTime,
-                t.EntryPrice,
-                t.ExitTime,
-                t.ExitPrice,
-                t.ExitReason.ToString(),
-                t.ReturnPercent)).ToList();
-
-            ChartOpenPositionDto? open = null;
-            var openPosition = await positions.GetOpenAsync(id, ct).ConfigureAwait(false);
-            if (openPosition is not null)
-            {
-                open = new ChartOpenPositionDto(
-                    openPosition.Direction == SignalDirection.Long ? "Long" : "Short",
-                    openPosition.EntryPrice,
-                    openPosition.StopLoss,
-                    openPosition.TakeProfit,
-                    openPosition.Units,
-                    openPosition.EntryTime);
-            }
-
-            // Anchoring: a signal logged on a still-in-progress day must sit on
-            // that day's candle, even when the minute feed has not delivered a bar
-            // yet (engine restarted mid-session). Bar times carry the Moscow offset
-            // while trade times come back from Postgres in UTC, so every day
-            // comparison goes through MoscowClock.ToMoscowDate.
-            var historyInstrumentId = InstrumentEngine.EffectiveInstrumentId(instrument);
-            var candleList = candles.ToList();
-            DateOnly today = MoscowClock.ToMoscowDate(DateTimeOffset.UtcNow);
-            bool hasTodayCandle = candleList.Any(c => MoscowClock.ToMoscowDate(c.Time) == today);
-            if (!hasTodayCandle && historyInstrumentId.Length > 0)
-            {
-                var todayBar = await history.GetCurrentDayBarAsync(historyInstrumentId, ct).ConfigureAwait(false);
-                if (todayBar is not null)
-                {
-                    candleList.Add(todayBar.Value);
-                }
-            }
-
-            // Days referenced by signals, as placeholders when the API has no bar
-            // for them (no price data at all): the marker still gets its own column.
-            var referencedDays = new SortedSet<DateOnly>();
-            foreach (var t in closedTrades)
-            {
-                referencedDays.Add(MoscowClock.ToMoscowDate(t.EntryTime));
-                referencedDays.Add(MoscowClock.ToMoscowDate(t.ExitTime));
-            }
-
-            if (openPosition is not null)
-            {
-                referencedDays.Add(MoscowClock.ToMoscowDate(openPosition.EntryTime));
-            }
-
-            var coveredDays = new HashSet<DateOnly>(candleList.Select(c => MoscowClock.ToMoscowDate(c.Time)));
-            DateOnly lastDay = candleList.Count > 0 ? MoscowClock.ToMoscowDate(candleList[^1].Time) : default;
-            var placeholders = new List<(DateOnly Day, decimal Price)>();
-            foreach (var day in referencedDays)
-            {
-                if (coveredDays.Contains(day) || (candleList.Count > 0 && day <= lastDay))
-                {
-                    continue;
-                }
-
-                decimal refPrice = candleList.Count > 0 ? candleList[^1].Close : 0m;
-                placeholders.Add((day, refPrice));
-                coveredDays.Add(day);
-            }
-
-            var chartCandles = candleList
-                .Select(c => new ChartCandleDto(c.Time, c.Open, c.High, c.Low, c.Close, c.Volume))
-                .ToList();
-            foreach (var (day, price) in placeholders)
-            {
-                var placeholderTime = new DateTimeOffset(
-                    day.ToDateTime(TimeOnly.FromTimeSpan(MoscowClock.SessionOpen)),
-                    MoscowClock.Offset);
-                chartCandles.Add(new ChartCandleDto(placeholderTime, price, price, price, price, 0, IsPlaceholder: true));
-            }
-
-            chartCandles.Sort((a, b) => a.Time.CompareTo(b.Time));
-
-            return Results.Json(new ChartDataDto(
-                instrument.Ticker,
-                instrument.Name ?? string.Empty,
-                chartCandles,
-                trades,
-                open));
+            var dto = await InstrumentDetailsBuilder.BuildAsync(
+                instrument, supervisor, history, tradeLogs, positions, metrics, signals,
+                strategyOptions.Value, ct).ConfigureAwait(false);
+            return Results.Json(dto);
         });
 
         // Nullable with a default: a non-nullable int query parameter is REQUIRED by

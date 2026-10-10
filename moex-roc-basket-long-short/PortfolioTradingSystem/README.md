@@ -134,10 +134,10 @@ local `dotnet run` still works.
 |---|---|---|
 | GET | `/` | Text summary (instrument count, engines, global state) |
 | GET | `/admin` | Embedded admin UI |
-| GET | `/chart?id=` | Per-instrument price chart (new tab) |
+| GET | `/details?id=` | Per-instrument details page (price chart + PnL, pending signal, recent signals; new tab) |
 | GET | `/api/instruments` | Instruments + metrics (Running first, then ticker) |
 | GET | `/api/instruments/{id}` | Single instrument + metrics |
-| GET | `/api/instruments/{id}/chart-data` | Chart payload: day candles + trades + open position (SL/TP) |
+| GET | `/api/instruments/{id}/details` | Details payload: day candles + trades + open position (SL/TP) + realized/unrealized PnL + pending signal + recent signals |
 | GET | `/api/instruments/{id}/signals?limit=` | Signal log (default 100, max 500) |
 | GET | `/api/signals?ticker=&page=&pageSize=` | Paged signal log for all instruments, newest first (pageSize default 50, max 200) |
 | GET | `/api/signals/tickers` | Distinct tickers present in the signal log |

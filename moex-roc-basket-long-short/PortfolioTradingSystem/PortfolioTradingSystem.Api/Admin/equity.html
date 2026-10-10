@@ -133,9 +133,15 @@ function computeScale() {
   eMax = isFinite(eMax) ? eMax : Number(data.equity);
   const ePad = (eMax - eMin) * 0.06 || 1;
   const yMin = eMin - ePad, yMax = eMax + ePad;
+  const eSpan = yMax - yMin;
+  ctx.font = "11px Consolas, monospace";
+  let labelW = 64;
+  for (let i = 0; i <= 6; i++) {
+    labelW = Math.max(labelW, Math.ceil(ctx.measureText(fmtMoney(yMin + eSpan * i / 6)).width) + 12);
+  }
+  PAD.l = Math.min(labelW, Math.floor(W * 0.4));
   const plotW = W - PAD.l - PAD.r, plotH = H - PAD.t - PAD.b;
   const windowFrac = Math.max(1e-6, view.to - view.from);
-  const eSpan = yMax - yMin;
   scale = {
     n, plotW, plotH, windowFrac, tMin, tMax, yMin, yMax, eSpan,
     xFor: t => PAD.l + ((t - tMin) / (tMax - tMin) - view.from) / windowFrac * plotW,

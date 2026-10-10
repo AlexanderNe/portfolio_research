@@ -19,9 +19,15 @@ agent, not for end users (see `README.md` for user/developer docs).
   see `../CODE_REVIEW.md`. `../report` is still NOT regenerated.)
 - Never commit, amend, or push unless explicitly asked.
 - `PortfolioTradingSystem.Tests` (xUnit) covers `MomentumEngineState` math, the
-  execution model, `InstrumentEngine` against in-memory fakes, and parity with the
-  Python simulator on a fixture of real bars. It references Domain + Application;
-  no real broker, database or app state. Run `dotnet test PortfolioTradingSystem.Tests`.
+  execution model, `InstrumentEngine` against in-memory fakes, parity with the
+  Python simulator on a fixture of real bars, and the admin details payload
+  (`InstrumentDetailsBuilderTests` drives `Application.Admin.InstrumentDetailsBuilder`
+  against in-memory fakes: realized/unrealized/total PnL, mark-to-market fallback,
+  pending-signal passthrough, the 50-signal limit, placeholder candles and the
+  in-progress day bar). It references Domain + Application; no real broker,
+  database or app state. The details builder lives in Application (not Api) so it
+  is testable; Api's `/details` endpoint is just a thin call. Run
+  `dotnet test PortfolioTradingSystem.Tests`.
 - Do not log credentials/tokens/secret values. Log only presence flags
   (e.g. `tokenConfigured`).
 
@@ -121,7 +127,7 @@ agent, not for end users (see `README.md` for user/developer docs).
 - Sunday/Moscow calendar anomalies can produce surprising candle timestamps (e.g. an
   entry at 21:28 Moscow on a non-trading Sunday in the Sept 2026 session); flag
   before shipping changes, don't silently "fix".
-- Admin chart (`GET /api/instruments/{id}/chart-data`) anchors every signal to its
+- Admin details (`GET /api/instruments/{id}/details`) anchors every signal to its
   Moscow calendar day: it appends the in-progress day bar via
   `IHistoricDailyBarsProvider.GetCurrentDayBarAsync` when the engine has none (e.g.
   restarted mid-session) and synthesises a dashed "no price data" placeholder candle

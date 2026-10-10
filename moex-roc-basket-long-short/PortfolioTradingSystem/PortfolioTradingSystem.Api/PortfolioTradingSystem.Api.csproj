@@ -12,7 +12,7 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Admin\admin.html" />
-    <EmbeddedResource Include="Admin\chart.html" />
+    <EmbeddedResource Include="Admin\details.html" />
     <EmbeddedResource Include="Admin\equity.html" />
   </ItemGroup>
 

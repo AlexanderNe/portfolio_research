@@ -476,7 +476,7 @@ function renderSimpleRows(list) {
     const pnlPct = m && m.positionPnlPercent !== null && m.positionPnlPercent !== undefined
       ? '<span style="color:' + (m.positionPnlPercent >= 0 ? "#7fd18a" : "#e88f8f") + '">' + esc(fmtPct(m.positionPnlPercent)) + '</span>'
       : "—";
-    return '<tr onclick="window.open(\'/chart?id=' + instr.id + '\', \'_blank\')">' +
+    return '<tr onclick="window.open(\'/details?id=' + instr.id + '\', \'_blank\')">' +
       '<td data-label="Ticker"><b>' + esc(instr.ticker) + '</b></td>' +
       '<td data-label="Position">' + pos + '</td>' +
       '<td data-label="PnL" class="mono">' + pnlPct + '</td>' +
@@ -534,7 +534,7 @@ function renderRows() {
       '<td data-label="ROC / ATR" class="mono">' + rocAtr + '</td>' +
       '<td data-label="Position">' + posState + posPnl + posSince + (m && m.pendingSignal !== 0 && m.pendingSignal ? " · signal " + (m.pendingSignal > 0 ? "L" : "S") : "") + '</td>' +
       '<td data-label="Actions" class="row-actions">' +
-        '<button class="btn" title="Open chart in a new tab" onclick="event.stopPropagation(); window.open(\'/chart?id=' + instr.id + '\', \'_blank\')">Chart</button>' +
+        '<button class="btn" title="Open instrument details (chart + PnL + signals) in a new tab" onclick="event.stopPropagation(); window.open(\'/details?id=' + instr.id + '\', \'_blank\')">Chart</button>' +
       '</td></tr>' +
       (isOpen ? '<tr id="detail-' + instr.ticker + '"><td colspan="9"><div class="detail open" id="detailBox-' + instr.ticker + '">' +
         '<div class="row-actions" style="margin-bottom:10px">' +
