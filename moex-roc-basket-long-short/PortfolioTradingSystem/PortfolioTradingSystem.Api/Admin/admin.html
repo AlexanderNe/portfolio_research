@@ -21,6 +21,7 @@
         <button class="dropdown-item" role="menuitem" onclick="control('reset', this)" title="reinitialize modules, clear caches, reload instruments">Reset state</button>
         <button class="dropdown-item ok" role="menuitem" onclick="control('resume', this)">Resume all</button>
         <button class="dropdown-item" role="menuitem" onclick="resolveAll(this)">Resolve all</button>
+        <button class="dropdown-item" role="menuitem" onclick="openAddInstrument()">Add instrument</button>
       </div>
     </div>
   </div>
@@ -63,25 +64,7 @@
   </nav>
 
   <section id="view-instruments">
-    <div class="card">
-      <details class="addform">
-        <summary>+ Add instrument</summary>
-        <form class="instrument-form" id="addForm">
-          <label>Ticker * <input name="ticker" required style="text-transform:uppercase"></label>
-          <label>Name <input name="name"></label>
-          <label>Lot size <input name="lotSize" type="number" value="1" min="1"></label>
-          <label>Future ticker <input name="futureTicker"></label>
-          <label>Future FIGI <input name="futureFigi"></label>
-          <label>Future class code <input name="futureClassCode"></label>
-          <label>Processing status
-            <select name="processingStatus"><option>paused</option><option>running</option></select>
-          </label>
-          <button class="btn primary" type="submit">Create</button>
-        </form>
-      </details>
-    </div>
-
-    <div class="card" style="margin-top:14px; overflow-x:auto">
+    <div class="card" style="overflow-x:auto">
       <div class="toolbar inst-toolbar" style="margin-bottom:10px">
         <div class="filterbox">
           <input type="text" id="instFilter" list="instTickerOptions" placeholder="Filter by ticker…">
@@ -137,6 +120,27 @@
     </div>
   </section>
 </main>
+<div class="modal" id="addInstrumentModal" hidden>
+  <div class="modal-backdrop" onclick="closeAddInstrument()"></div>
+  <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="addInstrumentTitle">
+    <div class="modal-head">
+      <h2 id="addInstrumentTitle">Add instrument</h2>
+      <button class="btn" type="button" onclick="closeAddInstrument()">Close</button>
+    </div>
+    <form class="instrument-form" id="addForm">
+      <label>Ticker * <input name="ticker" required style="text-transform:uppercase"></label>
+      <label>Name <input name="name"></label>
+      <label>Lot size <input name="lotSize" type="number" value="1" min="1"></label>
+      <label>Future ticker <input name="futureTicker"></label>
+      <label>Future FIGI <input name="futureFigi"></label>
+      <label>Future class code <input name="futureClassCode"></label>
+      <label>Processing status
+        <select name="processingStatus"><option>paused</option><option>running</option></select>
+      </label>
+      <button class="btn primary" type="submit">Create</button>
+    </form>
+  </div>
+</div>
 <div class="toast" id="toast"></div>
 
 <script src="/admin/pts.js"></script>

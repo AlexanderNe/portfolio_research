@@ -211,9 +211,35 @@ canvas { display: block; width: 100%; touch-action: pan-y; -webkit-user-select: 
   padding: 10px 16px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity .3s; z-index: 50;
 }
 
+/* Modal popup (admin actions menu) */
+.modal {
+  position: fixed; inset: 0; z-index: 60; display: flex; align-items: flex-start; justify-content: center;
+  padding: 48px 16px;
+}
+.modal[hidden] { display: none; }
+.modal-backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, .55); }
+.modal-panel {
+  position: relative; z-index: 1; width: 100%; max-width: 720px; max-height: calc(100vh - 96px); overflow: auto;
+  background: var(--panel); border: 1px solid var(--border-strong); border-radius: 10px; padding: 16px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, .5);
+}
+.modal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.modal-head h2 { margin: 0; font-size: 16px; }
+
+/* Signals ticker link */
+.page-admin #sigRows a { color: var(--blue); text-decoration: none; }
+.page-admin #sigRows a:hover { text-decoration: underline; }
+
 @media (max-width: 900px) {
   .page-admin .statusline { margin-left: 0; }
   .page-admin .errorbox { position: static; transform: none; max-width: 100%; font-size: 13px; text-align: left; }
+  /* Actions menu: when the header wraps the button moves off the right edge, so
+     anchor the menu to the header and span the viewport instead of right:0. */
+  .page-admin .dropdown { position: static; }
+  .page-admin .dropdown-menu {
+    left: 12px; right: 12px; top: calc(100% + 6px); min-width: 0;
+    max-height: 60vh; overflow: auto;
+  }
 }
 
 @media (max-width: 720px) {

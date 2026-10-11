@@ -347,8 +347,17 @@ document.addEventListener("click", e => {
   if (!actionsDropdown.contains(e.target)) closeActions();
 });
 document.addEventListener("keydown", e => {
-  if (e.key === "Escape") closeActions();
+  if (e.key === "Escape") { closeActions(); closeAddInstrument(); }
 });
+
+function openAddInstrument() {
+  closeActions();
+  document.getElementById("addInstrumentModal").hidden = false;
+}
+function closeAddInstrument() {
+  const modal = document.getElementById("addInstrumentModal");
+  if (modal) modal.hidden = true;
+}
 
 async function control(action, btn) {
   closeActions();
@@ -498,7 +507,7 @@ function renderSignalRows(items) {
   } else {
     box.innerHTML = items.map(s => '<tr>' +
       '<td data-label="Time" class="mono">' + fmtTime(s.timestamp) + '</td>' +
-      '<td data-label="Ticker"><b>' + esc(s.ticker || "") + '</b></td>' +
+      '<td data-label="Ticker"><a href="/details?id=' + s.instrumentId + '" target="_blank" rel="noopener"><b>' + esc(s.ticker || "") + '</b></a></td>' +
       '<td data-label="Type">' + signalTypeBadge(s.type) + '</td>' +
       '<td data-label="Direction">' + (s.direction === "Long" ? badge("LONG", "green") : s.direction === "Short" ? badge("SHORT", "red") : "—") + '</td>' +
       '<td data-label="Price" class="mono num">' + fmtNum(s.price, 4) + '</td>' +
@@ -543,7 +552,9 @@ document.getElementById("addForm").onsubmit = async e => {
   try {
     await api("/api/instruments", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
     toast("Created " + payload.ticker);
-    f.reset(); await refresh();
+    f.reset();
+    closeAddInstrument();
+    await refresh();
   } catch (err) { showError("Create failed: " + err.message); }
 };
 
