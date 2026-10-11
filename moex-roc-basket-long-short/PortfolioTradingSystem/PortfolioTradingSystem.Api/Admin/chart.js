@@ -30,11 +30,22 @@
     tip.style.display = "none";
   }
 
+  // Place the tooltip near (mx, my), flipping to the other side of the cursor
+  // when it would spill past the chart container's right/bottom edge.
   function showTip(tip, mx, my, html) {
     tip.innerHTML = html;
     tip.style.display = "block";
-    tip.style.left = (mx + 14) + "px";
-    tip.style.top = (my + 14) + "px";
+    const pad = 14;
+    const host = tip.offsetParent || tip.parentElement;
+    const w = tip.offsetWidth, h = tip.offsetHeight;
+    const hostW = host ? host.clientWidth : 0;
+    const hostH = host ? host.clientHeight : 0;
+    let left = mx + pad;
+    if (hostW && left + w > hostW) left = Math.max(0, mx - pad - w);
+    let top = my + pad;
+    if (hostH && top + h > hostH) top = Math.max(0, my - pad - h);
+    tip.style.left = left + "px";
+    tip.style.top = top + "px";
   }
 
   // Zoom a normalized [from, to] window horizontally around mx. Mutates + returns.

@@ -16,7 +16,9 @@ let data = null;
 let scale = null;
 let W = 0, H = 560;
 const PAD = { l: 64, r: 16, t: 16, b: 24 };
-let view = { from: 0, to: 1 };
+let priceH = { from: 0, to: 1 };
+let eqH = { from: 0, to: 1 };
+let view = priceH;
 let priceView = null;
 let _autoMin = 0, _autoMax = 1;
 let panning = null;
@@ -46,8 +48,9 @@ async function load() {
     // first load picks the default 3-month window.
     if (!initialized) {
       const dv = defaultView(data.candles);
-      view = dv.view;
+      priceH = dv.view;
       priceView = dv.range;
+      if (mode === "price") view = priceH;
       initialized = true;
     }
     document.getElementById("title").textContent =
@@ -379,9 +382,8 @@ function switchMode(m) {
   mode = m;
   document.getElementById("tabPrice").classList.toggle("active", m === "price");
   document.getElementById("tabEquity").classList.toggle("active", m === "equity");
-  view = { from: 0, to: 1 };
-  priceView = null;
-  eqView = null;
+  // Each chart keeps its own zoom/pan: switch the active window, don't reset it.
+  view = m === "price" ? priceH : eqH;
   if (m === "equity" && !eqData) loadEquity();
   render();
 }
@@ -616,12 +618,14 @@ cv.addEventListener("wheel", e => {
 
 document.getElementById("btnReset").onclick = () => {
   if (!data && !eqData) return;
-  view = { from: 0, to: 1 };
-  eqView = null;
-  if (mode === "equity") { render(); return; }
-  const dv = defaultView(data.candles);
-  view = dv.view;
-  priceView = dv.range;
+  if (mode === "equity") {
+    eqH.from = 0; eqH.to = 1;
+    eqView = null;
+  } else {
+    const dv = defaultView(data.candles);
+    priceH.from = dv.view.from; priceH.to = dv.view.to;
+    priceView = dv.range;
+  }
   render();
 };
 
