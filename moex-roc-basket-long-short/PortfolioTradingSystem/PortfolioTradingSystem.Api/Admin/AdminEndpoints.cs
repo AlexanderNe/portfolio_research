@@ -11,16 +11,36 @@ namespace PortfolioTradingSystem.Api.Admin;
 /// <summary>Admin panel HTTP surface (Basic Auth applied for the whole app).</summary>
 public static class AdminEndpoints
 {
+    // Shared static assets served from the assembly. The pages link these by
+    // absolute URL (/admin/<file>), so the routes must stay under /admin/.
+    private static readonly Dictionary<string, string> AdminAssets = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["app.css"] = "text/css",
+        ["pts.js"] = "text/javascript",
+        ["chart.js"] = "text/javascript",
+        ["admin.js"] = "text/javascript",
+        ["details.js"] = "text/javascript",
+        ["equity.js"] = "text/javascript",
+    };
+
     public static WebApplication MapAdminEndpoints(this WebApplication app)
     {
         const string rootPrefix = "/api";
         var logger = app.Logger;
 
-        app.MapGet("/admin", AdminPage.Serve);
+        app.MapGet("/admin", () =>
+            Results.Content(
+                EmbeddedAssets.ReadText("admin.html").Replace("$BUILD_LABEL$", EmbeddedAssets.BuildLabel()),
+                "text/html"));
 
-        app.MapGet("/details", DetailsPage.Serve);
+        app.MapGet("/details", () => Results.Content(EmbeddedAssets.ReadText("details.html"), "text/html"));
 
-        app.MapGet("/equity", EquityPage.Serve);
+        app.MapGet("/equity", () => Results.Content(EmbeddedAssets.ReadText("equity.html"), "text/html"));
+
+        app.MapGet("/admin/{file}", (string file) =>
+            AdminAssets.TryGetValue(file, out string? contentType)
+                ? Results.Content(EmbeddedAssets.ReadText(file), contentType)
+                : Results.NotFound());
 
         app.MapGet($"{rootPrefix}/equity-data", async (
             IInstrumentRepository instruments,
@@ -97,6 +117,41 @@ public static class AdminEndpoints
                 $"longs pnl pct: {longsPct.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)}\n" +
                 $"shorts pnl: {shorts.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)}\n" +
                 $"shorts pnl pct: {shortsPct.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)}");
+        });
+
+        // Machine-readable equivalent of GET "/" for the admin UI header/PnL cards.
+        app.MapGet($"{rootPrefix}/summary", async (
+            IInstrumentRepository instruments,
+            IEngineSupervisor supervisor,
+            IMetricsStore metrics,
+            ITradeLogRepository tradeLogs,
+            IOptions<StrategyOptions> strategyOptions,
+            CancellationToken ct) =>
+        {
+            var all = await instruments.GetAllAsync(ct).ConfigureAwait(false);
+            var metricsList = metrics.GetAll();
+            decimal realized = await tradeLogs.SumAllRealizedPnlAsync(ct).ConfigureAwait(false);
+            decimal open = metricsList.Sum(m => m.PositionPnl ?? 0m);
+            decimal total = realized + open;
+            decimal pool = all.Count * strategyOptions.Value.InitialCapital;
+            decimal openLong = metricsList.Where(m => m.PositionState == "long").Sum(m => m.PositionPnl ?? 0m);
+            decimal openShort = metricsList.Where(m => m.PositionState == "short").Sum(m => m.PositionPnl ?? 0m);
+            decimal Percent(decimal value) => pool > 0 ? value / pool * 100m : 0m;
+
+            return Results.Json(new PortfolioSummary(
+                Instruments: all.Count,
+                Running: all.Count(i => i.ProcessingStatus == ProcessingStatus.Running),
+                Engines: supervisor.Engines.Count,
+                GlobalState: supervisor.IsGloballyRunning ? "running" : "stopped",
+                MetricsTracked: metricsList.Count,
+                TotalPnl: total,
+                TotalPnlPct: Percent(total),
+                UnrealizedPnl: open,
+                UnrealizedPnlPct: Percent(open),
+                LongsPnl: openLong,
+                LongsPnlPct: Percent(openLong),
+                ShortsPnl: openShort,
+                ShortsPnlPct: Percent(openShort)));
         });
 
         app.MapGet($"{rootPrefix}/metrics", (IMetricsStore metrics) =>
@@ -464,3 +519,19 @@ public static class AdminEndpoints
             _ => ProcessingStatus.Paused,
         };
 }
+
+/// <summary>Portfolio-level snapshot for the admin header and PnL cards (GET /api/summary).</summary>
+public sealed record PortfolioSummary(
+    int Instruments,
+    int Running,
+    int Engines,
+    string GlobalState,
+    int MetricsTracked,
+    decimal TotalPnl,
+    decimal TotalPnlPct,
+    decimal UnrealizedPnl,
+    decimal UnrealizedPnlPct,
+    decimal LongsPnl,
+    decimal LongsPnlPct,
+    decimal ShortsPnl,
+    decimal ShortsPnlPct);

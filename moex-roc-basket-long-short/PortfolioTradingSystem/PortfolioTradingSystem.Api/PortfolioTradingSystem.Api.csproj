@@ -11,15 +11,15 @@
   </ItemGroup>
 
   <ItemGroup>
-    <EmbeddedResource Include="Admin\admin.html" />
-    <EmbeddedResource Include="Admin\details.html" />
-    <EmbeddedResource Include="Admin\equity.html" />
+    <EmbeddedResource Include="Admin\*.html" />
+    <EmbeddedResource Include="Admin\*.css" />
+    <EmbeddedResource Include="Admin\*.js" />
   </ItemGroup>
 
   <ItemGroup>
     <!--
       Emitted as [assembly: AssemblyMetadata("BuildDate", ...)] and shown in the
-      admin panel header (AdminPage replaces the $BUILD_LABEL$ token).
+      admin panel header (EmbeddedAssets.BuildLabel replaces the $BUILD_LABEL$ token).
     -->
     <AssemblyMetadata Include="BuildDate"
                       Value="$([System.DateTime]::UtcNow.ToString('yyyy.MM.dd HH:mm'))" />

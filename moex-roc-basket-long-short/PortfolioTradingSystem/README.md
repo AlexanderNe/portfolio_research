@@ -135,6 +135,9 @@ local `dotnet run` still works.
 | GET | `/` | Text summary (instrument count, engines, global state) |
 | GET | `/admin` | Embedded admin UI |
 | GET | `/details?id=` | Per-instrument details page (price/equity chart tabs, PnL, pending signal, recent signals; new tab) |
+| GET | `/equity` | Total-equity chart page |
+| GET | `/admin/{file}` | Embedded admin UI assets (`app.css`, `pts.js`, `chart.js`, `admin.js`, `details.js`, `equity.js`) |
+| GET | `/api/summary` | Portfolio snapshot JSON (counts, global state, PnL) for the admin header/cards |
 | GET | `/api/instruments` | Instruments + metrics (Running first, then ticker) |
 | GET | `/api/instruments/{id}` | Single instrument + metrics |
 | GET | `/api/instruments/{id}/details` | Details payload: day candles + trades + open position (SL/TP) + realized/unrealized PnL + pending signal + recent signals |
